@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: "citas-app \u2014 Backend serverless: una sola Lambda con Function URL\
+  \ + DynamoDB.\n"
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 29
+    MemorySize: 256
+    Tracing: Active
+Resources:
+  PlanesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: planes-crud
+      CodeUri: PlanesFunction
+      Handler: handler.lambda_handler
+      Runtime: python3.9
+      MemorySize: 256
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName: Planes
+      FunctionUrlConfig:
+        AuthType: NONE
+        Cors:
+          AllowOrigins:
+          - '*'
+          AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - PATCH
+    Metadata:
+      SamResourceId: PlanesFunction
+Outputs:
+  FunctionUrl:
+    Description: "URL de la Funci\xF3n para acceder al CRUD"
+    Value:
+      Fn::GetAtt:
+      - PlanesFunctionUrl
+      - FunctionUrl
