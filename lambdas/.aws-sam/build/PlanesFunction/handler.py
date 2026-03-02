@@ -39,7 +39,6 @@ def lambda_handler(event, context):
         elif http_method == 'PUT':
             body = json.loads(event.get('body', '{}'))
             for item in body:
-                print(f"item {item["nombre"]}")
                 item_id = item.get('nombre', None)
                 update_item(item_id, item)
             else:

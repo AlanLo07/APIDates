@@ -21,7 +21,7 @@ Resources:
       FunctionName: planes-crud
       CodeUri: functions/DatesCRUD
       Handler: handler.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.11
       MemorySize: 256
       # POLÍTICAS: Solo acceso a la tabla Planes
       Policies:

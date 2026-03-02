@@ -15,7 +15,7 @@ Resources:
       FunctionName: planes-crud
       CodeUri: PlanesFunction
       Handler: handler.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.11
       MemorySize: 256
       Policies:
       - DynamoDBCrudPolicy:
