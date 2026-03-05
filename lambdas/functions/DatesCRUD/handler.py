@@ -148,7 +148,7 @@ def update_item(item_id: str, data: dict):
     Evita sobrescribir campos no incluidos en el body.
     """
     # Construye expresión dinámica con los campos del body (excluye 'id')
-    update_fields = {k: v for k, v in data.items()}
+    update_fields = {k: v for k, v in data.items() if k != "nombre"}
     if not update_fields:
         return build_response(400, {"error": "No hay campos para actualizar"})
 
