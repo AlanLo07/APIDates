@@ -1,47 +1,230 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
-  citas-app — Backend serverless: una sola Lambda con Function URL + DynamoDB.
+  citas-app — Backend serverless mejorado:
+  API Gateway HTTP + 3 Lambdas + 2 tablas DynamoDB.
+  Optimizado para Free Tier de AWS.
+
+# ─── Parámetros ───────────────────────────────────────────────────────────────
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+    Description: Ambiente de despliegue
 
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.12
+    Runtime: python3.12 # Versión LTS más reciente
     Timeout: 29
-    MemorySize: 256
-    Tracing: Active
+    MemorySize: 128 # 128 MB es suficiente para operaciones DynamoDB simples
+    Tracing: Active # X-Ray activo
+    Architectures:
+      - arm64 # Graviton2: 20% más barato que x86_64
+    Environment:
+      Variables:
+        TABLE_NAME: Planes
+        CITAS_TABLE_NAME: !Ref CitasTable
+        POWERTOOLS_LOG_LEVEL: INFO
+    Layers:
+      - !Ref CommonLayer
 
 # ─── Recursos ──────────────────────────────────────────────────────────────────
 Resources:
+  # ── Capa compartida (utils.py) ─────────────────────────────────────────────
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "citas-common-${Environment}"
+      ContentUri: common/
+      CompatibleRuntimes:
+        - python3.12
+      RetentionPolicy: Delete
 
+  # ── API Gateway HTTP API ───────────────────────────────────────────────────
+  # HTTP API es ~70% más barato que REST API y suficiente para este caso
+  CitasApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - PATCH
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - X-Api-Key
+      # Opcional: habilitar API Key para proteger endpoints
+      # Auth:
+      #   DefaultAuthorizer: ApiKeyAuthorizer
+      #   Authorizers:
+      #     ApiKeyAuthorizer:
+      #       ...
+
+  # ── Lambda: Planes CRUD ────────────────────────────────────────────────────
   PlanesFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: planes-crud
-      CodeUri: functions/DatesCRUD
+      FunctionName: !Sub "planes-crud-${Environment}"
+      CodeUri: functions/DatesCRUD/
       Handler: handler.lambda_handler
-      Runtime: python3.11
-      MemorySize: 256
-      # POLÍTICAS: Solo acceso a la tabla Planes
+      Description: "CRUD de Planes turísticos/actividades"
       Policies:
         - DynamoDBCrudPolicy:
             TableName: Planes
-      # Habilitar URL de la Función
-      FunctionUrlConfig:
-        AuthType: NONE # Público (Ideal para pruebas o Webhooks)
-        Cors:
-          AllowOrigins:
-            - "*"
-          AllowMethods:
-            - GET
-            - POST
-            - PUT
-            - DELETE
-            - PATCH
+      Events:
+        GetAll:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /planes
+        GetOne:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /planes/{id}
+        Create:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /planes
+        Update:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /planes/{id}
+        Delete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /planes/{id}
+        ResetRatings:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PATCH
+            Path: /planes/reset-ratings
+
+  # ── Lambda: Citas CRUD ─────────────────────────────────────────────────────
+  CitasFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "citas-crud-${Environment}"
+      CodeUri: functions/CitasCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de Citas (agenda de actividades)"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CitasTable
+      Events:
+        GetAll:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /citas
+        GetOne:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /citas/{id}
+        Create:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /citas
+        Update:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /citas/{id}
+        Delete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /citas/{id}
+
+  # ── Lambda: Random Plan ────────────────────────────────────────────────────
+  RandomPlanFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "random-plan-${Environment}"
+      CodeUri: functions/RandomDates/
+      Handler: handler.lambda_handler
+      Description: "Genera un Plan aleatorio y una Cita sugerida"
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: Planes
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CitasTable
+      Events:
+        GetRandom:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /random
+
+  # ── DynamoDB: Tabla Citas ──────────────────────────────────────────────────
+  CitasTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub "Citas-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: estado
+          AttributeType: S
+        - AttributeName: fecha
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      # GSI para buscar citas por estado (ej: todas las pendientes)
+      GlobalSecondaryIndexes:
+        - IndexName: estado-fecha-index
+          KeySchema:
+            - AttributeName: estado
+              KeyType: HASH
+            - AttributeName: fecha
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: citas-app
 
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
-  FunctionUrl:
-    Description: "URL de la Función para acceder al CRUD"
-    Value: !GetAtt PlanesFunctionUrl.FunctionUrl
+  ApiUrl:
+    Description: "URL base de la API"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+    Export:
+      Name: !Sub "CitasApiUrl-${Environment}"
+
+  CitasTableName:
+    Description: "Nombre de la tabla Citas"
+    Value: !Ref CitasTable

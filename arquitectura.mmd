@@ -1,0 +1,61 @@
+graph TB
+    subgraph Client["🌐 Cliente (Web / Mobile)"]
+        APP["App Frontend\n(S3 + CloudFront)"]
+    end
+
+    subgraph AWS["☁️ AWS Cloud — Free Tier Optimizado"]
+
+        subgraph Gateway["Amazon API Gateway (HTTP API)"]
+            GW["API Gateway\n/planes → Lambda Planes\n/citas  → Lambda Citas\n/random → Lambda Random"]
+        end
+
+        subgraph Lambdas["AWS Lambda — Python 3.12"]
+            L1["planes-crud\nCRUD Planes"]
+            L2["citas-crud\nCRUD Citas"]
+            L3["random-plan\nGenerador Aleatorio\n(Claude AI / random.choice)"]
+        end
+
+        subgraph DynamoDB["Amazon DynamoDB (On-Demand — Free Tier)"]
+            T1["Tabla: Planes\nPK: id (UUID)\nAttr: nombre, typeLocation\nisVisited, rating, tags"]
+            T2["Tabla: Citas\nPK: id (UUID)\nSK: fecha (ISO)\nAttr: plan_id, estado\nnota, participantes"]
+        end
+
+        subgraph Storage["Storage & CDN"]
+            S3["S3 Bucket\nFrontend estático"]
+            CF["CloudFront\nCDN + HTTPS"]
+        end
+
+        subgraph Observability["Observabilidad"]
+            CW["CloudWatch Logs\n& Metrics"]
+            XRAY["X-Ray Tracing"]
+        end
+
+        subgraph Security["Seguridad"]
+            AUTH["API Key / Cognito\n(opcional fase 2)"]
+            IAM2["IAM Roles\n(least privilege)"]
+        end
+    end
+
+    APP -->|"HTTPS"| CF
+    CF --> S3
+    APP -->|"REST API\n+ API Key header"| GW
+    GW -->|"Route /planes"| L1
+    GW -->|"Route /citas"| L2
+    GW -->|"Route /random"| L3
+    L1 <-->|"boto3"| T1
+    L2 <-->|"boto3"| T2
+    L3 -->|"lee catálogo"| T1
+    L3 -->|"crea cita"| T2
+    L1 & L2 & L3 --> CW
+    L1 & L2 & L3 --> XRAY
+    AUTH -.->|"Protege"| GW
+    IAM2 -.->|"Permisos mínimos"| L1 & L2 & L3
+
+    style Client fill:#e8f4fd,stroke:#2196F3
+    style AWS fill:#fff8e1,stroke:#FF9800
+    style Gateway fill:#e3f2fd,stroke:#1565C0
+    style Lambdas fill:#f3e5f5,stroke:#7B1FA2
+    style DynamoDB fill:#e8f5e9,stroke:#2E7D32
+    style Storage fill:#fce4ec,stroke:#C62828
+    style Observability fill:#f1f8e9,stroke:#558B2F
+    style Security fill:#fff3e0,stroke:#E65100

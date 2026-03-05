@@ -1,0 +1,29 @@
+sequenceDiagram
+    actor User as 👤 Usuario
+    participant CF as CloudFront
+    participant GW as API Gateway
+    participant L as Lambda
+    participant DB as DynamoDB
+
+    Note over User,DB: Flujo: Generar Plan Aleatorio y Agendar Cita
+
+    User->>CF: GET /random?tipo=restaurante
+    CF->>GW: Forward request
+    GW->>L: Invoke random-plan Lambda
+    L->>DB: Scan Planes (filter typeLocation=restaurante)
+    DB-->>L: Lista de planes disponibles
+    L->>L: random.choice(planes)
+    L->>DB: PutItem en Tabla Citas\n{id: uuid, plan_id, fecha: hoy+7}
+    DB-->>L: OK
+    L-->>GW: 201 {cita_id, plan, fecha_sugerida}
+    GW-->>CF: Response
+    CF-->>User: 201 JSON
+
+    Note over User,DB: Flujo: CRUD Citas
+
+    User->>GW: PUT /citas/{id}\n{estado: "confirmada"}
+    GW->>L: Invoke citas-crud Lambda
+    L->>DB: UpdateItem Key={id}\nUpdateExpr: SET estado=:s
+    DB-->>L: OK
+    L-->>GW: 200 {message: "Actualizado"}
+    GW-->>User: 200 JSON
