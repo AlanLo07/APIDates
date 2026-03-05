@@ -151,7 +151,7 @@ def update_item(item_id: str, data: dict):
     Evita sobrescribir campos no incluidos en el body.
     """
     # Construye expresión dinámica con los campos del body (excluye 'id')
-    update_fields = {k: v for k, v in data.items() if k != "id"}
+    update_fields = {k: v for k, v in data.items()}
     if not update_fields:
         return build_response(400, {"error": "No hay campos para actualizar"})
 
@@ -170,7 +170,7 @@ def update_item(item_id: str, data: dict):
 
     try:
         table.update_item(
-            Key={"id": item_id},
+            Key={"nombre": item_id},
             UpdateExpression=update_expr,
             ExpressionAttributeValues=expr_values,
             ExpressionAttributeNames=expr_names,
@@ -181,12 +181,12 @@ def update_item(item_id: str, data: dict):
             return build_response(404, {"error": f"Plan '{item_id}' no encontrado"})
         raise
 
-    return build_response(200, {"message": "Plan actualizado", "id": item_id})
+    return build_response(200, {"message": "Plan actualizado", "nombre": item_id})
 
 
 def delete_item(item_id: str):
     table.delete_item(
-        Key={"id": item_id},
+        Key={"nombre": item_id},
         ConditionExpression=Attr("id").exists(),
     )
     return build_response(200, {"message": "Plan eliminado", "id": item_id})
