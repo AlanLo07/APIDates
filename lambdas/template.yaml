@@ -6,23 +6,13 @@ Description: >
   API Gateway HTTP + 3 Lambdas + 2 tablas DynamoDB.
   Optimizado para Free Tier de AWS.
 
-# ─── Parámetros ───────────────────────────────────────────────────────────────
-Parameters:
-  Environment:
-    Type: String
-    Default: dev
-    AllowedValues: [dev, prod]
-    Description: Ambiente de despliegue
-
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.12 # Versión LTS más reciente
+    Runtime: python3.11 # Versión LTS más reciente
     Timeout: 29
     MemorySize: 128 # 128 MB es suficiente para operaciones DynamoDB simples
     Tracing: Active # X-Ray activo
-    Architectures:
-      - arm64 # Graviton2: 20% más barato que x86_64
     Environment:
       Variables:
         TABLE_NAME: Planes
@@ -37,10 +27,10 @@ Resources:
   CommonLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
-      LayerName: !Sub "citas-common-${Environment}"
+      LayerName: !Sub "citas-common"
       ContentUri: common/
       CompatibleRuntimes:
-        - python3.12
+        - python3.11
       RetentionPolicy: Delete
 
   # ── API Gateway HTTP API ───────────────────────────────────────────────────
@@ -48,7 +38,6 @@ Resources:
   CitasApi:
     Type: AWS::Serverless::HttpApi
     Properties:
-      StageName: !Ref Environment
       CorsConfiguration:
         AllowOrigins:
           - "*"
@@ -73,7 +62,7 @@ Resources:
   PlanesFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "planes-crud-${Environment}"
+      FunctionName: !Sub "planes-crud"
       CodeUri: functions/DatesCRUD/
       Handler: handler.lambda_handler
       Description: "CRUD de Planes turísticos/actividades"
@@ -122,7 +111,7 @@ Resources:
   CitasFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "citas-crud-${Environment}"
+      FunctionName: !Sub "citas-crud"
       CodeUri: functions/CitasCRUD/
       Handler: handler.lambda_handler
       Description: "CRUD de Citas (agenda de actividades)"
@@ -165,7 +154,7 @@ Resources:
   RandomPlanFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "random-plan-${Environment}"
+      FunctionName: !Sub "random-plan"
       CodeUri: functions/RandomDates/
       Handler: handler.lambda_handler
       Description: "Genera un Plan aleatorio y una Cita sugerida"
@@ -187,7 +176,7 @@ Resources:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     Properties:
-      TableName: !Sub "Citas-${Environment}"
+      TableName: !Sub "Citas"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: id
@@ -212,8 +201,6 @@ Resources:
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
       Tags:
-        - Key: Environment
-          Value: !Ref Environment
         - Key: Project
           Value: citas-app
 
@@ -221,9 +208,9 @@ Resources:
 Outputs:
   ApiUrl:
     Description: "URL base de la API"
-    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com"
     Export:
-      Name: !Sub "CitasApiUrl-${Environment}"
+      Name: !Sub "CitasApiUrl"
 
   CitasTableName:
     Description: "Nombre de la tabla Citas"
