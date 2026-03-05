@@ -22,7 +22,7 @@ Resources:
     Properties:
       LayerName:
         Fn::Sub: citas-common
-      ContentUri: ..\..\common
+      ContentUri: ..\..\layers\baselayer
       CompatibleRuntimes:
       - python3.11
       RetentionPolicy: Delete

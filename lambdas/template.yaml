@@ -28,7 +28,7 @@ Resources:
     Type: AWS::Serverless::LayerVersion
     Properties:
       LayerName: !Sub "citas-common"
-      ContentUri: common/
+      ContentUri: layers/baselayer/
       CompatibleRuntimes:
         - python3.11
       RetentionPolicy: Delete
