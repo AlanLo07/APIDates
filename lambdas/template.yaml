@@ -81,7 +81,7 @@ Resources:
           Properties:
             ApiId: !Ref CitasApi
             Method: GET
-            Path: /planes/{id}
+            Path: /planes/{nombre}
         Create:
           Type: HttpApi
           Properties:
@@ -93,13 +93,13 @@ Resources:
           Properties:
             ApiId: !Ref CitasApi
             Method: PUT
-            Path: /planes/{id}
+            Path: /planes/{nombre}
         Delete:
           Type: HttpApi
           Properties:
             ApiId: !Ref CitasApi
             Method: DELETE
-            Path: /planes/{id}
+            Path: /planes/{nombre}
         ResetRatings:
           Type: HttpApi
           Properties:
@@ -168,8 +168,8 @@ Resources:
           Type: HttpApi
           Properties:
             ApiId: !Ref CitasApi
-            Method: GET
-            Path: /random
+            Method: POST
+            Path: planes/_random
 
   # ── DynamoDB: Tabla Citas ──────────────────────────────────────────────────
   CitasTable:

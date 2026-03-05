@@ -37,7 +37,7 @@ def lambda_handler(event, context):
     logger.info(json.dumps({"event_keys": list(event.keys()), "context_fn": context.function_name}))
 
     method = event["requestContext"]["http"]["method"]
-    item_id = get_path_param(event, "id")
+    item_id = get_path_param(event, "nombre")
 
     # Preflight CORS
     if method == "OPTIONS":
@@ -80,7 +80,7 @@ def lambda_handler(event, context):
 # ─── CRUD ─────────────────────────────────────────────────────────────────────
 
 def get_item(item_id: str):
-    result = table.get_item(Key={"id": item_id})
+    result = table.get_item(Key={"nombre": item_id})
     if "Item" not in result:
         return build_response(404, {"error": f"Plan '{item_id}' no encontrado"})
     return build_response(200, result["Item"])
@@ -98,7 +98,7 @@ def get_all_items(event: dict):
     # Paginación
     last_key = query_params.get("lastKey")
     if last_key:
-        params["ExclusiveStartKey"] = {"id": last_key}
+        params["ExclusiveStartKey"] = {"nombre": last_key}
 
     result = table.scan(**params)
     response_body = {
@@ -106,22 +106,20 @@ def get_all_items(event: dict):
         "count": result.get("Count", 0),
     }
     if next_key := result.get("LastEvaluatedKey"):
-        response_body["nextKey"] = next_key.get("id")
+        response_body["nextKey"] = next_key.get("nombre")
 
     return build_response(200, response_body)
 
 
 def create_item(data: dict):
     _validate(data)
-    # Genera UUID si no viene en el payload
-    data.setdefault("id", str(uuid.uuid4()))
     data.setdefault("typeLocation", "")
     data.setdefault("isVisited", False)
     data.setdefault("rating", 0)
     data.setdefault("tags", [])
-    logger.info(f"Creando plan: {data['id']} — {data.get('nombre')}")
+    logger.info(f"Creando plan: {data['nombre']}")
     table.put_item(Item=data)
-    return build_response(201, {"message": "Plan creado", "id": data["id"]})
+    return build_response(201, {"message": "Plan creado", "nombre": data["nombre"]})
 
 
 def bulk_create(items: list):
@@ -132,13 +130,12 @@ def bulk_create(items: list):
         for item in items:
             try:
                 _validate(item)
-                item.setdefault("id", str(uuid.uuid4()))
                 item.setdefault("typeLocation", "")
                 item.setdefault("isVisited", False)
                 item.setdefault("rating", 0)
                 item.setdefault("tags", [])
                 batch.put_item(Item=item)
-                created.append(item["id"])
+                created.append(item["nombre"])
             except ValueError as e:
                 errors.append({"item": item.get("nombre", "?"), "error": str(e)})
 
@@ -174,7 +171,7 @@ def update_item(item_id: str, data: dict):
             UpdateExpression=update_expr,
             ExpressionAttributeValues=expr_values,
             ExpressionAttributeNames=expr_names,
-            ConditionExpression=Attr("id").exists(),  # falla si no existe
+            ConditionExpression=Attr("nombre").exists(),  # falla si no existe
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -187,19 +184,19 @@ def update_item(item_id: str, data: dict):
 def delete_item(item_id: str):
     table.delete_item(
         Key={"nombre": item_id},
-        ConditionExpression=Attr("id").exists(),
+        ConditionExpression=Attr("nombre").exists(),
     )
-    return build_response(200, {"message": "Plan eliminado", "id": item_id})
+    return build_response(200, {"message": "Plan eliminado", "nombre": item_id})
 
 
 def reset_all_ratings():
     """Resetea ratings a 0 — usa batch_writer para mayor eficiencia."""
-    result = table.scan(ProjectionExpression="id")
+    result = table.scan(ProjectionExpression="nombre")
     items = result.get("Items", [])
     with table.batch_writer() as batch:
         for item in items:
             table.update_item(
-                Key={"id": item["id"]},
+                Key={"nombre": item["nombre"]},
                 UpdateExpression="SET rating = :zero",
                 ExpressionAttributeValues={":zero": 0},
             )
