@@ -6,6 +6,12 @@ Description: >
   API Gateway HTTP + 3 Lambdas + 2 tablas DynamoDB.
   Optimizado para Free Tier de AWS.
 
+Parameters:
+  PlanesTableName:
+    Type: String
+    Default: Planes
+    Description: "Nombre de la tabla Planes ya existente"
+
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
   Function:
@@ -15,7 +21,7 @@ Globals:
     Tracing: Active # X-Ray activo
     Environment:
       Variables:
-        TABLE_NAME: !Ref PlanesTable
+        TABLE_NAME: !Ref PlanesTableName
         CITAS_TABLE_NAME: !Ref CitasTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
@@ -27,7 +33,7 @@ Resources:
   CommonLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
-      LayerName: !Sub "citas-common"
+      LayerName: citas-common
       ContentUri: layers/baselayer/
       CompatibleRuntimes:
         - python3.11
@@ -62,13 +68,13 @@ Resources:
   PlanesFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "planes-crud"
+      FunctionName: planes-crud
       CodeUri: functions/DatesCRUD/
       Handler: handler.lambda_handler
       Description: "CRUD de Planes turísticos/actividades"
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PlanesTable
+            TableName: !Ref PlanesTableName
       Events:
         GetAll:
           Type: HttpApi
@@ -111,7 +117,7 @@ Resources:
   CitasFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "citas-crud"
+      FunctionName: citas-crud
       CodeUri: functions/CitasCRUD/
       Handler: handler.lambda_handler
       Description: "CRUD de Citas (agenda de actividades)"
@@ -154,13 +160,13 @@ Resources:
   RandomPlanFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "random-plan"
+      FunctionName: random-plan
       CodeUri: functions/RandomDates/
       Handler: handler.lambda_handler
       Description: "Genera un Plan aleatorio y una Cita sugerida"
       Policies:
         - DynamoDBReadPolicy:
-            TableName: !Ref PlanesTable
+            TableName: !Ref PlanesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref CitasTable
       Events:
@@ -169,7 +175,7 @@ Resources:
           Properties:
             ApiId: !Ref CitasApi
             Method: POST
-            Path: planes/_random
+            Path: /planes/_random
 
   # ── DynamoDB: Tabla Citas ──────────────────────────────────────────────────
   CitasTable:
@@ -206,26 +212,6 @@ Resources:
       Tags:
         - Key: Project
           Value: citas-app
-  PlanesTable:
-    Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TableName: Planes
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: nombre
-          AttributeType: S
-      KeySchema:
-        - AttributeName: nombre
-          KeyType: HASH
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-      SSESpecification:
-        SSEEnabled: true
-      Tags:
-        - Key: Project
-          Value: citas-app
 
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
@@ -238,6 +224,3 @@ Outputs:
   CitasTableName:
     Description: "Nombre de la tabla Citas"
     Value: !Ref CitasTable
-  PlanesTableName:
-    Description: "Nombre de la tabla Planes"
-    Value: !Ref PlanesTable
