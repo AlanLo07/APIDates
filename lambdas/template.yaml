@@ -15,7 +15,7 @@ Globals:
     Tracing: Active # X-Ray activo
     Environment:
       Variables:
-        TABLE_NAME: Planes
+        TABLE_NAME: !Ref PlanesTable
         CITAS_TABLE_NAME: !Ref CitasTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
@@ -68,7 +68,7 @@ Resources:
       Description: "CRUD de Planes turísticos/actividades"
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: Planes
+            TableName: !Ref PlanesTable
       Events:
         GetAll:
           Type: HttpApi
@@ -160,7 +160,7 @@ Resources:
       Description: "Genera un Plan aleatorio y una Cita sugerida"
       Policies:
         - DynamoDBReadPolicy:
-            TableName: Planes
+            TableName: !Ref PlanesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref CitasTable
       Events:
@@ -175,8 +175,9 @@ Resources:
   CitasTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      TableName: !Sub "Citas"
+      TableName: Citas
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: id
@@ -200,6 +201,28 @@ Resources:
             ProjectionType: ALL
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+  PlanesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: Planes
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: nombre
+          AttributeType: S
+      KeySchema:
+        - AttributeName: nombre
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
       Tags:
         - Key: Project
           Value: citas-app
@@ -215,3 +238,6 @@ Outputs:
   CitasTableName:
     Description: "Nombre de la tabla Citas"
     Value: !Ref CitasTable
+  PlanesTableName:
+    Description: "Nombre de la tabla Planes"
+    Value: !Ref PlanesTable

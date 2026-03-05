@@ -88,7 +88,7 @@ def get_item(item_id: str):
 
 def get_all_items(event: dict):
     """Scan con paginación. Acepta ?lastKey=<token> para paginar."""
-    params: dict = {"Limit": 50}
+    params: dict = {"Limit": 300}
 
     # Filtrado opcional por typeLocation: /planes?type=restaurante
     query_params = event.get("queryStringParameters") or {}
