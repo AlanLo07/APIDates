@@ -48,7 +48,8 @@ def lambda_handler(event, context):
             case "GET":
                 return get_item(item_id) if item_id else get_all_items(event)
             case "POST":
-                body = parse_body(event)
+                body = json.loads(event["body"])
+                body = json.loads(body["body"])
                 if isinstance(body, list):
                     return bulk_create(body)
                 return create_item(body)
@@ -133,7 +134,6 @@ def bulk_create(items: list):
                 item.setdefault("typeLocation", "")
                 item.setdefault("isVisited", False)
                 item.setdefault("rating", 0)
-                item.setdefault("tags", [])
                 batch.put_item(Item=item)
                 created.append(item["nombre"])
             except ValueError as e:
