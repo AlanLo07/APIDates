@@ -1,201 +1,258 @@
-"""
-citas_handler.py — CRUD de Citas
-Nueva funcionalidad:
-✅ Tabla separada con PK: id, SK: fecha (permite buscar por rango de fechas)
-✅ Campos: id, fecha, plan_id, estado, nota, participantes
-✅ Query por fecha (más eficiente que scan)
-✅ Validación de estado (pendiente/confirmada/cancelada/completada)
-✅ Mismas mejoras de seguridad y logging que planes_handler
-"""
 import json
-import logging
+import boto3
 import os
 import uuid
-from datetime import datetime, timezone
+from decimal import Decimal
+from datetime import datetime
 
-import boto3
-from boto3.dynamodb.conditions import Key, Attr
-from botocore.exceptions import ClientError
-
-from common.utils import build_response, parse_body, get_path_param
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-dynamodb = boto3.resource("dynamodb")
-TABLE_NAME = os.environ.get("CITAS_TABLE_NAME", "Citas")
+dynamodb = boto3.resource('dynamodb')
+TABLE_NAME = os.environ.get('CITAS_TABLE_NAME', 'CitasTable')
 table = dynamodb.Table(TABLE_NAME)
 
-ESTADOS_VALIDOS = {"pendiente", "confirmada", "cancelada", "completada"}
+# ─── Tipos válidos y sus campos requeridos ────────────────────────────────────
+VALID_TYPES = {'recuerdo', 'carta', 'evento'}
 
+REQUIRED_FIELDS = {
+    'recuerdo': ['title', 'description', 'date', 'imagePath'],
+    'carta':    ['title', 'description', 'date'],
+    'evento':   ['title', 'description', 'date'],
+}
 
-# ─── Handler principal ────────────────────────────────────────────────────────
+# ─── Serializador de Decimal para json.dumps ──────────────────────────────────
+class DecimalEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super().default(obj)
 
-def lambda_handler(event, context):
-    logger.info(json.dumps({"path": event.get("rawPath"), "method": event["requestContext"]["http"]["method"]}))
+# ─── Helper de respuesta ─────────────────────────────────────────────────────
+def build_response(status_code, body):
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        },
+        'body': json.dumps(body, cls=DecimalEncoder),
+    }
 
-    method = event["requestContext"]["http"]["method"]
-    item_id = get_path_param(event, "id")
+# ─── Validación del modelo ────────────────────────────────────────────────────
+def validate_cita(data: dict) -> tuple[bool, str]:
+    """
+    Valida que el item tenga el tipo correcto y los campos requeridos.
+    Retorna (True, '') si es válido, o (False, mensaje_error) si no.
+    """
+    event_type = data.get('type', '')
+    if event_type not in VALID_TYPES:
+        return False, f"Tipo inválido: '{event_type}'. Debe ser uno de: {', '.join(VALID_TYPES)}"
 
-    if method == "OPTIONS":
-        return build_response(200, {})
+    required = REQUIRED_FIELDS[event_type]
+    missing = [f for f in required if not data.get(f)]
+    if missing:
+        return False, f"Campos requeridos faltantes para tipo '{event_type}': {', '.join(missing)}"
 
+    # Validar formato de fecha dd-mm-yyyy
+    date_str = data.get('date', '')
     try:
-        match method:
-            case "GET":
-                return get_cita(item_id) if item_id else get_citas(event)
-            case "POST":
-                return create_cita(parse_body(event))
-            case "PUT":
-                if not item_id:
-                    return build_response(400, {"error": "Se requiere {id} en la ruta"})
-                return update_cita(item_id, parse_body(event))
-            case "DELETE":
-                if not item_id:
-                    return build_response(400, {"error": "Se requiere {id} en la ruta"})
-                return delete_cita(item_id)
-            case _:
-                return build_response(405, {"error": "Método no permitido"})
+        datetime.strptime(date_str, '%d-%m-%Y')
+    except ValueError:
+        return False, f"Formato de fecha inválido: '{date_str}'. Se espera dd-mm-yyyy"
 
-    except ValueError as e:
-        return build_response(400, {"error": str(e)})
-    except ClientError as e:
-        logger.error(f"DynamoDB error: {e.response['Error']}")
-        return build_response(502, {"error": "Error de base de datos"})
-    except Exception:
-        logger.exception("Error inesperado")
-        return build_response(500, {"error": "Error interno del servidor"})
+    return True, ''
 
+# ─── Normalización del modelo por tipo ───────────────────────────────────────
+def normalize_cita(data: dict) -> dict:
+    """
+    Asegura que cada tipo tenga sus campos con valores por defecto
+    y elimina campos que no corresponden al tipo.
+    """
+    event_type = data['type']
+    base = {
+        'id':          data.get('id') or str(uuid.uuid4()),
+        'type':        event_type,
+        'title':       data['title'].strip(),
+        'description': data['description'].strip(),
+        'date':        data['date'],
+    }
+
+    if event_type == 'recuerdo':
+        base['imagePath'] = data.get('imagePath', '').strip()
+
+    elif event_type == 'carta':
+        base['abierta'] = bool(data.get('abierta', False))
+
+    elif event_type == 'evento':
+        # icon se guarda como string (nombre del IconData de Flutter)
+        # Si no viene, usamos el default del modelo Dart
+        base['icon'] = data.get('icon', 'backpack_outlined')
+
+    return base
+
+# ─── Paginación en scan ───────────────────────────────────────────────────────
+def scan_all(filter_expression=None, filter_kwargs=None) -> list:
+    """
+    Recorre todas las páginas de DynamoDB para evitar el límite de 1MB.
+    """
+    kwargs = {}
+    if filter_expression:
+        kwargs['FilterExpression'] = filter_expression
+    if filter_kwargs:
+        kwargs.update(filter_kwargs)
+
+    items = []
+    while True:
+        response = table.scan(**kwargs)
+        items.extend(response.get('Items', []))
+        last_key = response.get('LastEvaluatedKey')
+        if not last_key:
+            break
+        kwargs['ExclusiveStartKey'] = last_key
+    return items
 
 # ─── CRUD ─────────────────────────────────────────────────────────────────────
+def get_item(item_id: str):
+    result = table.get_item(Key={'id': item_id})
+    if 'Item' in result:
+        return build_response(200, result['Item'])
+    return build_response(404, {'message': f"Cita con id '{item_id}' no encontrada"})
 
-def get_cita(item_id: str):
-    result = table.get_item(Key={"id": item_id})
-    if "Item" not in result:
-        return build_response(404, {"error": f"Cita '{item_id}' no encontrada"})
-    return build_response(200, result["Item"])
-
-
-def get_citas(event: dict):
+def get_all_items(event_type: str | None = None):
     """
-    Devuelve citas con filtros opcionales por query params:
-    - ?estado=pendiente
-    - ?plan_id=<uuid>
-    - ?desde=2025-01-01&hasta=2025-12-31
+    Obtiene todos los items. Si se pasa ?type=recuerdo filtra por tipo.
     """
-    query_params = event.get("queryStringParameters") or {}
-    params: dict = {"Limit": 50}
-    filter_exprs = []
-    expr_values = {}
+    if event_type and event_type in VALID_TYPES:
+        from boto3.dynamodb.conditions import Attr
+        items = scan_all(
+            filter_expression=Attr('type').eq(event_type)
+        )
+    else:
+        items = scan_all()
 
-    if estado := query_params.get("estado"):
-        _validate_estado(estado)
-        filter_exprs.append(Attr("estado").eq(estado))
-    if plan_id := query_params.get("plan_id"):
-        filter_exprs.append(Attr("plan_id").eq(plan_id))
-    if desde := query_params.get("desde"):
-        filter_exprs.append(Attr("fecha").gte(desde))
-    if hasta := query_params.get("hasta"):
-        filter_exprs.append(Attr("fecha").lte(hasta))
+    # Ordenar por fecha (dd-mm-yyyy → comparable)
+    def sort_key(item):
+        try:
+            return datetime.strptime(item.get('date', '01-01-1970'), '%d-%m-%Y')
+        except ValueError:
+            return datetime.min
 
-    if filter_exprs:
-        expr = filter_exprs[0]
-        for fe in filter_exprs[1:]:
-            expr = expr & fe
-        params["FilterExpression"] = expr
+    items.sort(key=sort_key)
+    return build_response(200, items)
 
-    if last_key := query_params.get("lastKey"):
-        params["ExclusiveStartKey"] = {"id": last_key}
+def create_item(data: dict):
+    valid, error_msg = validate_cita(data)
+    if not valid:
+        return build_response(400, {'message': error_msg})
 
-    result = table.scan(**params)
-    response_body = {
-        "items": result.get("Items", []),
-        "count": result.get("Count", 0),
-    }
-    if next_key := result.get("LastEvaluatedKey"):
-        response_body["nextKey"] = next_key.get("id")
+    item = normalize_cita(data)
+    table.put_item(Item=item)
+    return build_response(201, {'message': 'Cita creada con éxito', 'id': item['id'], 'type': item['type']})
 
-    return build_response(200, response_body)
+def update_item(item_id: str, data: dict):
+    # Verificar que existe
+    existing = table.get_item(Key={'id': item_id})
+    if 'Item' not in existing:
+        return build_response(404, {'message': f"Cita con id '{item_id}' no encontrada"})
 
+    data['id'] = item_id
+    valid, error_msg = validate_cita(data)
+    if not valid:
+        return build_response(400, {'message': error_msg})
 
-def create_cita(data: dict):
-    _validate_cita(data)
-    cita = {
-        "id": str(uuid.uuid4()),
-        "plan_id": data["plan_id"],
-        "fecha": data.get("fecha", _fecha_iso_ahora()),
-        "estado": data.get("estado", "pendiente"),
-        "nota": data.get("nota", ""),
-        "participantes": data.get("participantes", []),
-        "creado_en": _fecha_iso_ahora(),
-    }
-    table.put_item(Item=cita)
-    logger.info(f"Cita creada: {cita['id']} para plan {cita['plan_id']}")
-    return build_response(201, {"message": "Cita creada", "id": cita["id"], "cita": cita})
+    item = normalize_cita(data)
+    table.put_item(Item=item)
+    return build_response(200, {'message': 'Cita actualizada con éxito'})
 
+def delete_item(item_id: str):
+    existing = table.get_item(Key={'id': item_id})
+    if 'Item' not in existing:
+        return build_response(404, {'message': f"Cita con id '{item_id}' no encontrada"})
 
-def update_cita(item_id: str, data: dict):
-    campos = {k: v for k, v in data.items() if k not in ("id", "creado_en")}
-    if not campos:
-        return build_response(400, {"error": "No hay campos para actualizar"})
+    table.delete_item(Key={'id': item_id})
+    return build_response(200, {'message': 'Cita eliminada con éxito'})
 
-    if "estado" in campos:
-        _validate_estado(campos["estado"])
+def open_carta(item_id: str):
+    """
+    PATCH /{id}/abrir — Marca una carta como abierta si la fecha ya llegó.
+    """
+    result = table.get_item(Key={'id': item_id})
+    if 'Item' not in result:
+        return build_response(404, {'message': 'Carta no encontrada'})
 
-    expr_parts, expr_values, expr_names = [], {}, {}
-    for key, value in campos.items():
-        safe_key = f"#f_{key}"
-        val_key = f":v_{key}"
-        expr_parts.append(f"{safe_key} = {val_key}")
-        expr_values[val_key] = value
-        expr_names[safe_key] = key
+    item = result['Item']
+    if item.get('type') != 'carta':
+        return build_response(400, {'message': 'Este item no es una carta'})
 
-    expr_values[":updated"] = _fecha_iso_ahora()
-    update_expr = "SET " + ", ".join(expr_parts) + ", #f_actualizado_en = :updated"
-    expr_names["#f_actualizado_en"] = "actualizado_en"
+    fecha_carta = datetime.strptime(item['date'], '%d-%m-%Y')
+    if datetime.now() < fecha_carta:
+        days_left = (fecha_carta - datetime.now()).days
+        return build_response(403, {
+            'message': f'La carta aún no puede abrirse. Faltan {days_left} días.',
+            'openDate': item['date']
+        })
+
+    item['abierta'] = True
+    table.put_item(Item=item)
+    return build_response(200, {'message': 'Carta abierta', 'item': item})
+
+# ─── Handler principal ────────────────────────────────────────────────────────
+def lambda_handler(event, context):
+    http_method  = event.get('requestContext', {}).get('http', {}).get('method', '')
+    path         = event.get('rawPath', '')
+    path_params  = event.get('pathParameters') or {}
+    query_params = event.get('queryStringParameters') or {}
+    item_id      = path_params.get('id')
+
+    print(f"[{http_method}] {path} | id={item_id} | query={query_params}")
+
+    # Parsear body una sola vez
+    body = {}
+    raw_body = event.get('body', '{}')
+    if raw_body:
+        try:
+            body = json.loads(raw_body)
+        except (json.JSONDecodeError, TypeError):
+            return build_response(400, {'message': 'Body JSON inválido'})
 
     try:
-        table.update_item(
-            Key={"id": item_id},
-            UpdateExpression=update_expr,
-            ExpressionAttributeValues=expr_values,
-            ExpressionAttributeNames=expr_names,
-            ConditionExpression=Attr("id").exists(),
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return build_response(404, {"error": f"Cita '{item_id}' no encontrada"})
-        raise
+        # Ruta especial: PATCH /{id}/abrir → abre una carta
+        if http_method == 'PATCH' and item_id and path.endswith('/abrir'):
+            return open_carta(item_id)
 
-    return build_response(200, {"message": "Cita actualizada", "id": item_id})
+        if http_method == 'GET':
+            if item_id:
+                return get_item(item_id)
+            return get_all_items(event_type=query_params.get('type'))
 
+        elif http_method == 'POST':
+            if isinstance(body, list):
+                results = []
+                errors  = []
+                for i, item_data in enumerate(body):
+                    resp = create_item(item_data)
+                    if resp['statusCode'] != 201:
+                        errors.append({'index': i, 'error': json.loads(resp['body'])['message']})
+                    else:
+                        results.append(json.loads(resp['body'])['id'])
+                if errors:
+                    return build_response(207, {'created': results, 'errors': errors})
+                return build_response(201, {'message': f'{len(results)} citas creadas', 'ids': results})
+            return create_item(body)
 
-def delete_cita(item_id: str):
-    try:
-        table.delete_item(
-            Key={"id": item_id},
-            ConditionExpression=Attr("id").exists(),
-        )
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return build_response(404, {"error": f"Cita '{item_id}' no encontrada"})
-        raise
-    return build_response(200, {"message": "Cita eliminada", "id": item_id})
+        elif http_method == 'PUT':
+            if not item_id:
+                return build_response(400, {'message': 'Se requiere id en la ruta para PUT'})
+            return update_item(item_id, body)
 
+        elif http_method == 'DELETE':
+            if not item_id:
+                return build_response(400, {'message': 'Se requiere id en la ruta para DELETE'})
+            return delete_item(item_id)
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+        else:
+            return build_response(405, {'message': f'Método {http_method} no permitido'})
 
-def _validate_cita(data: dict):
-    if not data.get("plan_id"):
-        raise ValueError("El campo 'plan_id' es requerido")
-    if "estado" in data:
-        _validate_estado(data["estado"])
-
-
-def _validate_estado(estado: str):
-    if estado not in ESTADOS_VALIDOS:
-        raise ValueError(f"Estado inválido. Opciones: {ESTADOS_VALIDOS}")
-
-
-def _fecha_iso_ahora() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        return build_response(500, {'error': str(e)})
