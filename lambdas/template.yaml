@@ -3,7 +3,7 @@ Transform: AWS::Serverless-2016-10-31
 
 Description: >
   citas-app — Backend serverless mejorado:
-  API Gateway HTTP + 3 Lambdas + 2 tablas DynamoDB.
+  API Gateway HTTP + 4 Lambdas + 3 tablas DynamoDB.
   Optimizado para Free Tier de AWS.
 
 Parameters:
@@ -11,18 +11,23 @@ Parameters:
     Type: String
     Default: Planes
     Description: "Nombre de la tabla Planes ya existente"
+  CitasTableName:
+    Type: String
+    Default: Citas
+    Description: "Nombre de la tabla Citas ya existente"
 
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.11 # Versión LTS más reciente
+    Runtime: python3.11
     Timeout: 29
-    MemorySize: 128 # 128 MB es suficiente para operaciones DynamoDB simples
-    Tracing: Active # X-Ray activo
+    MemorySize: 128
+    Tracing: Active
     Environment:
       Variables:
         TABLE_NAME: !Ref PlanesTableName
-        CITAS_TABLE_NAME: !Ref CitasTable
+        CITAS_TABLE_NAME: !Ref CitasTableName
+        LOVE_PHRASES_TABLE_NAME: !Ref LovePhrasesTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
       - !Ref CommonLayer
@@ -40,7 +45,6 @@ Resources:
       RetentionPolicy: Delete
 
   # ── API Gateway HTTP API ───────────────────────────────────────────────────
-  # HTTP API es ~70% más barato que REST API y suficiente para este caso
   CitasApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -57,12 +61,6 @@ Resources:
         AllowHeaders:
           - Content-Type
           - X-Api-Key
-      # Opcional: habilitar API Key para proteger endpoints
-      # Auth:
-      #   DefaultAuthorizer: ApiKeyAuthorizer
-      #   Authorizers:
-      #     ApiKeyAuthorizer:
-      #       ...
 
   # ── Lambda: Planes CRUD ────────────────────────────────────────────────────
   PlanesFunction:
@@ -123,7 +121,7 @@ Resources:
       Description: "CRUD de Citas (agenda de actividades)"
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref CitasTable
+            TableName: !Ref CitasTableName
       Events:
         GetAll:
           Type: HttpApi
@@ -168,7 +166,7 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref PlanesTableName
         - DynamoDBCrudPolicy:
-            TableName: !Ref CitasTable
+            TableName: !Ref CitasTableName
       Events:
         GetRandom:
           Type: HttpApi
@@ -177,32 +175,77 @@ Resources:
             Method: POST
             Path: /planes/_random
 
-  # ── DynamoDB: Tabla Citas ──────────────────────────────────────────────────
-  CitasTable:
+  # ── Lambda: Love Phrases CRUD ──────────────────────────────────────────────
+  LovePhrasesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: love-phrases-crud
+      CodeUri: functions/PhrasesCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de Frases de Amor para el juego del ahorcado"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LovePhrasesTable
+      Events:
+        GetAll:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /love-phrases
+        GetRandom:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /love-phrases/random
+        GetOne:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /love-phrases/{id}
+        Create:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /love-phrases
+        Update:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /love-phrases/{id}
+        Delete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /love-phrases/{id}
+
+  # ── DynamoDB: Tabla Love Phrases ───────────────────────────────────────────
+  LovePhrasesTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: Citas
+      TableName: LovePhrases
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: id
           AttributeType: S
-        - AttributeName: estado
-          AttributeType: S
-        - AttributeName: fecha
+        - AttributeName: type
           AttributeType: S
       KeySchema:
         - AttributeName: id
           KeyType: HASH
-      # GSI para buscar citas por estado (ej: todas las pendientes)
+      # GSI para filtrar por tipo (cancion, pelicula, libro, serie, pareja)
       GlobalSecondaryIndexes:
-        - IndexName: estado-fecha-index
+        - IndexName: type-index
           KeySchema:
-            - AttributeName: estado
+            - AttributeName: type
               KeyType: HASH
-            - AttributeName: fecha
-              KeyType: RANGE
           Projection:
             ProjectionType: ALL
       PointInTimeRecoverySpecification:
@@ -221,6 +264,10 @@ Outputs:
     Export:
       Name: !Sub "CitasApiUrl"
 
-  CitasTableName:
-    Description: "Nombre de la tabla Citas"
-    Value: !Ref CitasTable
+  LovePhrasesTableName:
+    Description: "Nombre de la tabla LovePhrases"
+    Value: !Ref LovePhrasesTable
+
+  LovePhrasesEndpoint:
+    Description: "Endpoint de Love Phrases"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/love-phrases"

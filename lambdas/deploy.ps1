@@ -5,7 +5,8 @@ sam deploy `
     --region us-east-2 `
     --capabilities CAPABILITY_IAM `
     --resolve-s3 `
-    --no-confirm-changeset
+    --no-confirm-changeset `
+    --parameter-overrides PlanesTableName=Planes
 
 # Obtener la URL
 aws cloudformation describe-stacks `
