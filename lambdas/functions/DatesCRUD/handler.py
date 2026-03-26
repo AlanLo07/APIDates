@@ -49,7 +49,8 @@ def lambda_handler(event, context):
                 return get_item(item_id) if item_id else get_all_items(event)
             case "POST":
                 body = json.loads(event["body"])
-                body = json.loads(body["body"])
+                if "body" in body: 
+                    body = json.loads(body["body"])
                 if isinstance(body, list):
                     return bulk_create(body)
                 return create_item(body)
