@@ -34,6 +34,39 @@ Globals:
 
 # ─── Recursos ──────────────────────────────────────────────────────────────────
 Resources:
+# ── S3 Bucket para Imágenes ────────────────────────────────────────────────
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-images-${AWS::AccountId}"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: ["GET", "PUT", "POST"]
+            AllowedOrigins: ["*"] # En producción, limita esto a tu dominio
+  # ── Lambda: Image Management ──────────────────────────────────────────────
+  ImagesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: images-manager
+      CodeUri: functions/ImagesManager/
+      Handler: handler.lambda_handler
+      Description: "Genera URLs para subir y gestionar imágenes en S3"
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ImagesBucket
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref ImagesBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ImagesBucket
+      Events:
+        GetUploadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /images/upload-url
   # ── Capa compartida (utils.py) ─────────────────────────────────────────────
   CommonLayer:
     Type: AWS::Serverless::LayerVersion
