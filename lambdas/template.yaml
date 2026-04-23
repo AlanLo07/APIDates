@@ -39,11 +39,29 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "${AWS::StackName}-images-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ["*"]
             AllowedMethods: ["GET", "PUT", "POST"]
             AllowedOrigins: ["*"] # En producción, limita esto a tu dominio
+  # ── Política para permitir lectura pública (ReadOnly) ──────────────────────
+  ImagesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImagesBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: "*" # Permite a cualquier persona
+            Action: "s3:GetObject"
+            Resource: !Sub "arn:aws:s3:::${ImagesBucket}/*" # Aplica a todos los objetos dentro
   # ── Lambda: Image Management ──────────────────────────────────────────────
   ImagesFunction:
     Type: AWS::Serverless::Function
