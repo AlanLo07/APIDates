@@ -4,6 +4,10 @@ import os
 import uuid
 from decimal import Decimal
 from datetime import datetime
+from datetime import timezone
+
+from botocore.exceptions import ClientError
+from boto3.dynamodb.conditions import Attr
 
 dynamodb = boto3.resource('dynamodb')
 TABLE_NAME = os.environ.get('CITAS_TABLE_NAME', 'CitasTable')
@@ -151,18 +155,37 @@ def create_item(data: dict):
 
 def update_item(item_id: str, data: dict):
     # Verificar que existe
-    existing = table.get_item(Key={'id': item_id})
-    if 'Item' not in existing:
-        return build_response(404, {'message': f"Cita con id '{item_id}' no encontrada"})
+    update_fields = {k: v for k, v in data.items() if k != "id"}
+    if not update_fields:
+        return build_response(400, {"error": "No hay campos para actualizar"})
 
-    data['id'] = item_id
-    valid, error_msg = validate_cita(data)
-    if not valid:
-        return build_response(400, {'message': error_msg})
+    expr_parts = []
+    expr_values = {}
+    expr_names = {}
 
-    item = normalize_cita(data)
-    table.put_item(Item=item)
-    return build_response(200, {'message': 'Cita actualizada con éxito'})
+    for key, value in update_fields.items():
+        safe_key = f"#f_{key}"
+        val_key = f":v_{key}"
+        expr_parts.append(f"{safe_key} = {val_key}")
+        expr_values[val_key] = value
+        expr_names[safe_key] = key
+
+    update_expr = "SET " + ", ".join(expr_parts)
+
+    try:
+        table.update_item(
+            Key={"id": item_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_values,
+            ExpressionAttributeNames=expr_names,
+            ConditionExpression=Attr("id").exists(),  # falla si no existe
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return build_response(404, {"error": f"Plan '{item_id}' no encontrado"})
+        raise
+
+    return build_response(200, {"message": "Plan actualizado", "id": item_id})
 
 def delete_item(item_id: str):
     existing = table.get_item(Key={'id': item_id})
@@ -185,7 +208,7 @@ def open_carta(item_id: str):
         return build_response(400, {'message': 'Este item no es una carta'})
 
     fecha_carta = datetime.strptime(item['date'], '%d-%m-%Y')
-    if datetime.now() < fecha_carta:
+    if datetime.now(timezone.utc).replace(tzinfo=None) < fecha_carta:
         days_left = (fecha_carta - datetime.now()).days
         return build_response(403, {
             'message': f'La carta aún no puede abrirse. Faltan {days_left} días.',
