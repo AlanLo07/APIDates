@@ -204,6 +204,12 @@ Resources:
             ApiId: !Ref CitasApi
             Method: DELETE
             Path: /citas/{id}
+        Open:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PATCH
+            Path: /citas/{id}/abrir
 
   # ── Lambda: Random Plan ────────────────────────────────────────────────────
   RandomPlanFunction:
