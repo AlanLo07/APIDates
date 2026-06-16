@@ -1,0 +1,52 @@
+sequenceDiagram
+    actor App as Flutter App
+    participant GW as API Gateway
+    participant Fn as citas-crud Lambda
+    participant DB as CitasTable DynamoDB
+
+    Note over App,DB: POST /citas/cancion-semana — Registrar cancion
+
+    App->>GW: POST body titulo artista link setBy weekKey
+    GW->>Fn: invoke  rawPath=/citas/cancion-semana
+    Fn->>Fn: inyecta type=cancion_semana
+    Fn->>Fn: validate_cita weekKey YYYY-WNN + link spotify.com
+    Fn->>DB: scan FilterExpression type=cancion_semana AND weekKey=2026-W24
+
+    alt weekKey ya tiene cancion registrada
+        DB-->>Fn: item existente
+        Fn-->>GW: 409 Conflict
+        GW-->>App: message ya existe existing_id
+    else semana disponible
+        DB-->>Fn: lista vacia
+        Fn->>DB: put_item id tipo titulo artista link setBy weekKey
+        DB-->>Fn: OK
+        Fn-->>GW: 201 Created
+        GW-->>App: id weekKey
+    end
+
+    Note over App,DB: GET /citas/cancion-semana/current — Cancion activa
+
+    App->>GW: GET /citas/cancion-semana/current
+    GW->>Fn: invoke  rawPath=/citas/cancion-semana/current
+    Fn->>Fn: current_week_key devuelve 2026-W24
+    Fn->>DB: scan FilterExpression type=cancion_semana AND weekKey=2026-W24
+
+    alt cancion encontrada
+        DB-->>Fn: item cancion_semana
+        Fn-->>GW: 200 OK
+        GW-->>App: titulo artista link setBy weekKey
+    else sin cancion esta semana
+        DB-->>Fn: lista vacia
+        Fn-->>GW: 404 Not Found
+        GW-->>App: message sin cancion weekKey
+    end
+
+    Note over App,DB: GET /citas/cancion-semana — Historial completo
+
+    App->>GW: GET /citas/cancion-semana
+    GW->>Fn: invoke
+    Fn->>DB: scan FilterExpression type=cancion_semana
+    DB-->>Fn: lista todas las canciones
+    Fn->>Fn: sort por weekKey descendente
+    Fn-->>GW: 200 OK
+    GW-->>App: items count lista ordenada

@@ -214,6 +214,24 @@ Resources:
             ApiId: !Ref CitasApi
             Method: PATCH
             Path: /citas/{id}/abrir
+        GetCancionesSemana:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /citas/cancion-semana
+        GetCancionSemanaActual:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /citas/cancion-semana/current
+        CreateCancionSemana:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /citas/cancion-semana
 
   # ── Lambda: Random Plan ────────────────────────────────────────────────────
   RandomPlanFunction:

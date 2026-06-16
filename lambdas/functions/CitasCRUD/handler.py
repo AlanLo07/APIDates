@@ -41,7 +41,7 @@ REQUIRED_FIELDS: dict[str, list[str]] = {
     'recuerdo':       ['title', 'description', 'date', 'imagePath'],
     'carta':          ['title', 'description', 'date'],
     'evento':         ['title', 'description', 'date'],
-    'cancion_semana': ['titulo', 'artista', 'link', 'setBy', 'weekKey'],
+    'cancion_semana': ['title', 'artista', 'link', 'setBy', 'weekKey', 'date', 'description'],  # se valida que date sea una fecha, aunque no se use directamente
 }
 
 # ISO week key: YYYY-WNN  →  "2026-W24"
@@ -311,11 +311,13 @@ def create_cancion_semana(data: dict):
 
     Body esperado:
     {
-      "titulo":  "nombre de la canción",
+      "title":  "nombre de la canción",
       "artista": "nombre del artista",
       "link":    "https://open.spotify.com/track/...",
       "setBy":   "nombre de quien la elige",
       "weekKey": "2026-W24"          ← semana ISO actual
+      "date":    "dd-mm-yyyy"         ← se valida formato, aunque no se use directamente
+      "description": "opcional, puede incluir letra o comentario"  ← NUEVO
     }
     """
     data['type'] = 'cancion_semana'   # se inyecta, no lo envía el cliente

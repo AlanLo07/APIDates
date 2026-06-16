@@ -1,73 +1,67 @@
----
-title: citas-app — Arquitectura AWS Serverless
----
-flowchart TD
-    %% ── Cliente ──────────────────────────────────────────────────────────────
-    APP["📱 Flutter App\n(iOS / Android)"]
+flowchart TB
+    App["📱 Flutter App"]
 
-    %% ── API Gateway ──────────────────────────────────────────────────────────
-    APIGW["🌐 API Gateway\nHTTP API\n(CitasApi)"]
+    subgraph AWS["AWS us-east-2"]
 
-    %% ── Lambda Functions ─────────────────────────────────────────────────────
-    subgraph LAMBDAS["⚡ Lambda Functions  (python3.11 · 128 MB · 29 s)"]
-        L1["planes-crud\nDatesCRUD/handler.py"]
-        L2["citas-crud\nCitasCRUD/handler.py"]
-        L3["random-plan\nRandomDates/handler.py"]
-        L4["love-phrases-crud\nPhrasesCRUD/handler.py"]
-        L5["images-manager\nImagesManager/handler.py"]
-        L6["kamasutra-crud\n🆕 KamasutraCRUD/handler.py"]
+        subgraph APIGW["API Gateway HTTP API — CitasApi"]
+            R1["/planes\nGET · POST · PUT · DELETE · PATCH"]
+            R2["/citas\nGET · POST · PUT · DELETE · PATCH"]
+            R3["🎵 /citas/cancion-semana\nGET · POST"]
+            R4["🎵 /citas/cancion-semana/current\nGET"]
+            R5["/love-phrases\nGET · POST · PUT · DELETE"]
+            R6["/images/upload-url\nPOST"]
+            R7["/planes/_random\nPOST"]
+        end
+
+        subgraph FN["Lambda Functions  Python 3.11  128 MB  29 s"]
+            LPlanes["planes-crud\nDatesCRUD"]
+            LCitas["citas-crud\nCitasCRUD"]
+            LPhrases["love-phrases-crud\nPhrasesCRUD"]
+            LImages["images-manager\nImagesManager"]
+            LRandom["random-plan\nRandomDates"]
+        end
+
+        subgraph STORE["Almacenamiento"]
+            TPlanes[("DynamoDB\nPlanes\nPK: nombre")]
+            TCitas[("DynamoDB\nCitasTable\nPK: id\n+ cancion_semana")]
+            TPhrases[("DynamoDB\nLovePhrases\nPK: id\nGSI: type")]
+            S3[("S3 Bucket\nplanes-images\nPre-signed URLs")]
+        end
+
+        Layer["CommonLayer\nutils.py  DecimalEncoder\nbuild_response  parse_body"]
+
     end
 
-    %% ── Layer compartida ─────────────────────────────────────────────────────
-    LAYER["📦 CommonLayer\ncommon/utils.py\nbuild_response · parse_body · DecimalEncoder"]
+    App --> R1
+    App --> R2
+    App --> R3
+    App --> R4
+    App --> R5
+    App --> R6
+    App --> R7
 
-    %% ── DynamoDB Tables ──────────────────────────────────────────────────────
-    subgraph DYNAMO["🗄️ DynamoDB  (PAY_PER_REQUEST · SSE · PITR)"]
-        DB1[("Planes\n⚠️ external — fuera del stack\nPK: nombre")]
-        DB2[("CitasTable\nPK: id\ntipos: recuerdo · carta · evento")]
-        DB3[("LovePhrases\nPK: id · GSI: type-index")]
-        DB4[("KamasutraTable\n🆕 PK: id · GSI: level-index")]
-    end
+    R1 --> LPlanes
+    R2 --> LCitas
+    R3 --> LCitas
+    R4 --> LCitas
+    R5 --> LPhrases
+    R6 --> LImages
+    R7 --> LRandom
 
-    %% ── S3 ───────────────────────────────────────────────────────────────────
-    S3["🪣 S3 Bucket\n${stack}-images-${accountId}\nPresigned URL upload"]
+    LPlanes --> TPlanes
+    LCitas --> TCitas
+    LPhrases --> TPhrases
+    LImages --> S3
+    LRandom --> TPlanes
+    LRandom --> TCitas
 
-    %% ── Flujos principales ───────────────────────────────────────────────────
-    APP -->|"HTTPS"| APIGW
+    Layer -.->|compartida| LPlanes
+    Layer -.->|compartida| LCitas
+    Layer -.->|compartida| LPhrases
+    Layer -.->|compartida| LImages
+    Layer -.->|compartida| LRandom
 
-    APIGW -->|"GET·POST·PUT·DELETE·PATCH /planes"| L1
-    APIGW -->|"GET·POST·PUT·DELETE·PATCH /citas"| L2
-    APIGW -->|"POST /planes/_random"| L3
-    APIGW -->|"GET·POST·PUT·DELETE /love-phrases"| L4
-    APIGW -->|"POST /images/upload-url"| L5
-    APIGW -->|"GET·POST·PUT·DELETE /kamasutra"| L6
-
-    LAYER -.->|"shared layer"| L1
-    LAYER -.->|"shared layer"| L2
-    LAYER -.->|"shared layer"| L3
-    LAYER -.->|"shared layer"| L4
-    LAYER -.->|"shared layer"| L6
-
-    L1 <-->|"CRUD"| DB1
-    L2 <-->|"CRUD"| DB2
-    L3 -->|"READ"| DB1
-    L3 -->|"WRITE sugerida"| DB2
-    L4 <-->|"CRUD"| DB3
-    L5 -->|"presigned PUT"| S3
-    L6 <-->|"CRUD"| DB4
-
-    %% ── Estilos ──────────────────────────────────────────────────────────────
-    classDef lambda  fill:#FF9900,stroke:#c87300,color:#000,rx:6
-    classDef dynamo  fill:#3B48CC,stroke:#2a35a0,color:#fff
-    classDef s3      fill:#3F8624,stroke:#2d6119,color:#fff
-    classDef api     fill:#8C4FFF,stroke:#6a35d4,color:#fff
-    classDef layer   fill:#555,stroke:#333,color:#fff,stroke-dasharray:4
-    classDef new     fill:#e91e8c,stroke:#b5166c,color:#fff
-
-    class L1,L2,L3,L4,L5 lambda
-    class L6 new
-    class DB1,DB2,DB3 dynamo
-    class DB4 new
-    class S3 s3
-    class APIGW api
-    class LAYER layer
+    style R3 fill:#16a34a,color:#ffffff,stroke:#15803d
+    style R4 fill:#16a34a,color:#ffffff,stroke:#15803d
+    style TCitas fill:#0369a1,color:#ffffff,stroke:#075985
+    style Layer fill:#7c3aed,color:#ffffff,stroke:#6d28d9
