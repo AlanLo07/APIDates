@@ -15,6 +15,10 @@ Parameters:
     Type: String
     Default: Citas
     Description: "Nombre de la tabla Citas ya existente"
+  # KamasutraTableName:
+  #   Type: String
+  #   Default: KamasutraTable
+  #   Description: "Nombre de la tabla Kamasutra"
 
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
@@ -313,6 +317,87 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  # ── Lambda: Kamasutra CRUD ─────────────────────────────────────────────────
+  KamasutraFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: kamasutra-crud
+      CodeUri: functions/KamasutraCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de posiciones de Kamasutra con niveles"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref KamasutraTable
+      Events:
+        GetAll:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /kamasutra
+        GetRandom:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /kamasutra/random
+        GetOne:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /kamasutra/{id}
+        Create:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /kamasutra
+        Update:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /kamasutra/{id}
+        Delete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /kamasutra/{id}
+
+  # ── DynamoDB: Tabla Kamasutra ──────────────────────────────────────────────
+  KamasutraTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: KamasutraTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: level
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      # GSI para filtrar eficientemente por nivel sin scan completo
+      GlobalSecondaryIndexes:
+        - IndexName: level-index
+          KeySchema:
+            - AttributeName: level
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ApiUrl:
@@ -328,3 +413,7 @@ Outputs:
   LovePhrasesEndpoint:
     Description: "Endpoint de Love Phrases"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/love-phrases"
+  
+  KamasutraEndpoint:
+    Description: "Endpoint de Kamasutra"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/kamasutra"

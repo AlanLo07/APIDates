@@ -1,0 +1,53 @@
+---
+title: KamasutraCRUD — Flujo de Endpoints
+---
+flowchart LR
+    CLIENT["📱 Flutter"]
+
+    subgraph ROUTES["Rutas  /kamasutra"]
+        R1["GET /kamasutra\n?level=facil|medio|avanzado\n?lastKey=cursor"]
+        R2["GET /kamasutra/random\n?level=facil|medio|avanzado"]
+        R3["GET /kamasutra/{id}"]
+        R4["POST /kamasutra\nbody: KamaPosition | KamaPosition[]"]
+        R5["PUT /kamasutra/{id}\nbody: campos a actualizar"]
+        R6["DELETE /kamasutra/{id}"]
+    end
+
+    subgraph HANDLER["handler.py"]
+        H1["get_all_items()\nScan paginado + filtro level"]
+        H2["get_random()\nScan → random.choice"]
+        H3["get_item(id)"]
+        H4S["create_item()\n_validate → _normalize\n→ put_item"]
+        H4B["bulk_create()\nbatch_writer"]
+        H5["update_item()\nUpdateExpression dinámica\nConditionExpression exists"]
+        H6["delete_item()\nget_item check → delete"]
+    end
+
+    subgraph DYNAMO["KamasutraTable"]
+        PK["PK: id (UUID)"]
+        GSI["GSI: level-index\nfacil | medio | avanzado"]
+    end
+
+    CLIENT --> R1 --> H1
+    CLIENT --> R2 --> H2
+    CLIENT --> R3 --> H3
+    CLIENT --> R4 --> H4S
+    R4 -->|"lista"| H4B
+    CLIENT --> R5 --> H5
+    CLIENT --> R6 --> H6
+
+    H1 <-->|"Scan + FilterExpr"| PK
+    H2 <-->|"Scan + FilterExpr"| GSI
+    H3 <-->|"GetItem"| PK
+    H4S -->|"PutItem"| PK
+    H4B -->|"BatchWrite"| PK
+    H5 <-->|"UpdateItem\nConditionExpr"| PK
+    H6 <-->|"GetItem + DeleteItem"| PK
+
+    classDef route  fill:#8C4FFF,stroke:#6a35d4,color:#fff
+    classDef fn     fill:#FF9900,stroke:#c87300,color:#000
+    classDef db     fill:#3B48CC,stroke:#2a35a0,color:#fff
+
+    class R1,R2,R3,R4,R5,R6 route
+    class H1,H2,H3,H4S,H4B,H5,H6 fn
+    class PK,GSI db
