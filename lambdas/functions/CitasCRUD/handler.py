@@ -120,11 +120,12 @@ def normalize_cita(data: dict) -> dict:
         return {
             'id':      data.get('id') or str(uuid.uuid4()),
             'type':    event_type,
-            'titulo':  data['titulo'].strip(),
+            'title':  data['title'].strip(),
             'artista': data['artista'].strip(),
             'link':    data['link'].strip(),
             'setBy':   data['setBy'].strip(),
             'weekKey': data['weekKey'].strip(),
+            'description': data.get('description', '').strip(),
         }
 
     # ── Campos base compartidos ────────────────────────────────────────────────
@@ -342,7 +343,7 @@ def create_cancion_semana(data: dict):
     logger.info(json.dumps({
         'event':   'cancion_semana_created',
         'id':      item['id'],
-        'titulo':  item['titulo'],
+        'title':  item['title'],
         'weekKey': week_key,
     }))
     return build_response(201, {
