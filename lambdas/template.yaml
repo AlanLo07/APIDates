@@ -89,6 +89,12 @@ Resources:
             ApiId: !Ref CitasApi
             Method: POST
             Path: /images/upload-url
+        GetAudioUploadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /audio/upload-url
   # ── Capa compartida (utils.py) ─────────────────────────────────────────────
   CommonLayer:
     Type: AWS::Serverless::LayerVersion
