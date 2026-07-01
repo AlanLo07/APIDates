@@ -1,0 +1,18 @@
+sequenceDiagram
+    actor User as 👤 Usuario
+    participant App as 📱 App Flutter
+    participant GW as API Gateway
+    participant L as Lambda images-manager
+    participant S3 as S3 Bucket
+
+    Note over User,S3: Flujo para subir una imagen con URL prefirmada
+
+    User->>App: Selecciona imagen
+    App->>GW: POST /images/upload-url
+    GW->>L: Invoca ImagesManager
+    L->>L: Genera unique_key y presigned_url
+    L-->>GW: 200 {uploadUrl, key, finalUrl}
+    GW-->>App: JSON con URL de carga
+    App->>S3: PUT uploadUrl con la imagen
+    S3-->>App: 200 OK
+    App-->>User: Imagen subida correctamente

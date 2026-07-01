@@ -10,7 +10,8 @@ flowchart TB
             R4["🎵 /citas/cancion-semana/current\nGET"]
             R5["/love-phrases\nGET · POST · PUT · DELETE"]
             R6["/images/upload-url\nPOST"]
-            R7["/planes/_random\nPOST"]
+            R7["/audio/upload-url\nPOST"]
+            R8["/planes/_random\nPOST"]
         end
 
         subgraph FN["Lambda Functions  Python 3.11  128 MB  29 s"]
@@ -25,7 +26,7 @@ flowchart TB
             TPlanes[("DynamoDB\nPlanes\nPK: nombre")]
             TCitas[("DynamoDB\nCitasTable\nPK: id\n+ cancion_semana")]
             TPhrases[("DynamoDB\nLovePhrases\nPK: id\nGSI: type")]
-            S3[("S3 Bucket\nplanes-images\nPre-signed URLs")]
+            S3[("S3 Bucket\nimages-audio\nPre-signed URLs")]
         end
 
         Layer["CommonLayer\nutils.py  DecimalEncoder\nbuild_response  parse_body"]
@@ -39,6 +40,7 @@ flowchart TB
     App --> R5
     App --> R6
     App --> R7
+    App --> R8
 
     R1 --> LPlanes
     R2 --> LCitas
@@ -46,7 +48,8 @@ flowchart TB
     R4 --> LCitas
     R5 --> LPhrases
     R6 --> LImages
-    R7 --> LRandom
+    R7 --> LImages
+    R8 --> LRandom
 
     LPlanes --> TPlanes
     LCitas --> TCitas
