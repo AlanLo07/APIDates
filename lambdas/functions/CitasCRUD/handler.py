@@ -41,7 +41,7 @@ REQUIRED_FIELDS: dict[str, list[str]] = {
     'recuerdo':       ['title', 'description', 'date', 'imagePath'],
     'carta':          ['title', 'description', 'date'],
     'evento':         ['title', 'description', 'date'],
-    'cancion_semana': ['title', 'artista', 'link', 'setBy', 'weekKey', 'date', 'description'],  # se valida que date sea una fecha, aunque no se use directamente
+    'cancion_semana': ['title', 'artista', 'link', 'setBy', 'weekKey'],  # se valida que date sea una fecha, aunque no se use directamente
 }
 
 # ISO week key: YYYY-WNN  →  "2026-W24"
@@ -141,6 +141,10 @@ def normalize_cita(data: dict) -> dict:
         base['imagePath'] = data.get('imagePath', '').strip()
     elif event_type == 'carta':
         base['abierta'] = bool(data.get('abierta', False))
+        if audio_url := data.get('audioUrl', '').strip():
+            base['audioUrl'] = audio_url
+        if image_url := data.get('imageUrl', '').strip():
+            base['imageUrl'] = image_url
     elif event_type == 'evento':
         base['icon'] = data.get('icon', 'backpack_outlined')
 
