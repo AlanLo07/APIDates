@@ -7,11 +7,11 @@ flowchart TD
     %% GET Endpoints
     Dispatch -->|GET /challenges| GetAll1["GET ALL<br/>- Scan table<br/>- Filter by level?<br/>- Paginate"]
     Dispatch -->|GET /challenges/random| GetRnd1["GET RANDOM<br/>- Scan all<br/>- Filter by level?<br/>- Pick one"]
-    Dispatch -->|GET /challenges/{id}| GetOne1["GET ONE BY ID<br/>- Query by id<br/>- Return item"]
+    Dispatch -->|GET /challenges/ID| GetOne1["GET ONE BY ID<br/>- Query by id<br/>- Return item"]
     
     Dispatch -->|GET /dice| GetAll2["GET ALL<br/>- Scan table<br/>- Filter level?<br/>- Filter diceType?"]
     Dispatch -->|GET /dice/random| GetRnd2["GET RANDOM<br/>- Scan with filters<br/>- Pick random"]
-    Dispatch -->|GET /dice/{id}| GetOne2["GET ONE BY ID<br/>- Query by id<br/>- Return item"]
+    Dispatch -->|GET /dice/ID| GetOne2["GET ONE BY ID<br/>- Query by id<br/>- Return item"]
     
     %% POST Endpoint
     Dispatch -->|POST| CheckPost{Body is<br/>array?}

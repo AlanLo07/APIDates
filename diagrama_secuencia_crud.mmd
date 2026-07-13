@@ -98,60 +98,44 @@ sequenceDiagram
         APIGw-->>Cliente: {message, created: [id1, id2, id3], errors: []}
     end
     
-    %% Caso 5: PUT /challenges/{id}
+    %% Caso 5: PUT /challenges/ID
     rect rgb(255, 200, 220)
         Note over Cliente,Log: Caso 5: Actualizar Challenge
-        Cliente->>APIGw: PUT /challenges/{id}
-        Note right of Cliente: {emoji: ✨, level: atrevido}
-        APIGw->>Lambda: HTTP Event + {id, Body}
+        Cliente->>APIGw: PUT /challenges/ID
+        Note right of Cliente: emoji, level
+        APIGw->>Lambda: HTTP Event
         activate Lambda
         Lambda->>Log: 🟢 Iniciando UPDATE
         Lambda->>Lambda: Construir UpdateExpression
-        
-        alt Item existe
-            Lambda->>DDB: UpdateItem(Key, UpdateExpression, ConditionExpression)
-            activate DDB
-            DDB-->>Lambda: Success
-            deactivate DDB
-            Lambda->>Log: 🟢 Challenge actualizado
-            Lambda->>APIGw: 200 OK
-            deactivate Lambda
-            APIGw-->>Cliente: {message, id}
-        else Item no existe
-            Lambda->>Log: 🟡 ConditionCheckFailedException
-            Lambda->>APIGw: 404 Not Found
-            deactivate Lambda
-            APIGw-->>Cliente: {error: "Challenge not found"}
-        end
+        Lambda->>DDB: UpdateItem(Key, UpdateExpression)
+        activate DDB
+        DDB-->>Lambda: Success
+        deactivate DDB
+        Lambda->>Log: 🟢 Challenge actualizado
+        Lambda->>APIGw: 200 OK
+        deactivate Lambda
+        APIGw-->>Cliente: message, id
     end
     
-    %% Caso 6: DELETE /challenges/{id}
+    %% Caso 6: DELETE /challenges/ID
     rect rgb(255, 200, 200)
         Note over Cliente,Log: Caso 6: Eliminar Challenge
-        Cliente->>APIGw: DELETE /challenges/{id}
-        APIGw->>Lambda: HTTP Event + {id}
+        Cliente->>APIGw: DELETE /challenges/ID
+        APIGw->>Lambda: HTTP Event
         activate Lambda
         Lambda->>Log: 🟢 Verificando existencia
-        Lambda->>DDB: GetItem(Key: {id})
+        Lambda->>DDB: GetItem(Key)
         activate DDB
         DDB-->>Lambda: Item or empty
         deactivate DDB
-        
-        alt Item existe
-            Lambda->>DDB: DeleteItem(Key)
-            activate DDB
-            DDB-->>Lambda: Success
-            deactivate DDB
-            Lambda->>Log: 🟢 Challenge eliminado
-            Lambda->>APIGw: 200 OK
-            deactivate Lambda
-            APIGw-->>Cliente: {message, id}
-        else Item no existe
-            Lambda->>Log: 🟡 Item no encontrado
-            Lambda->>APIGw: 404 Not Found
-            deactivate Lambda
-            APIGw-->>Cliente: {error: "Challenge not found"}
-        end
+        Lambda->>DDB: DeleteItem(Key)
+        activate DDB
+        DDB-->>Lambda: Success
+        deactivate DDB
+        Lambda->>Log: 🟢 Challenge eliminado
+        Lambda->>APIGw: 200 OK
+        deactivate Lambda
+        APIGw-->>Cliente: message, id
     end
     
     %% Caso 7: Error handling
