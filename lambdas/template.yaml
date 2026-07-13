@@ -23,7 +23,7 @@ Parameters:
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.11
+    Runtime: python3.14
     Timeout: 29
     MemorySize: 128
     Tracing: Active
@@ -35,6 +35,7 @@ Globals:
         CHALLENGES_TABLE_NAME: !Ref ChallengesTable
         DICE_TABLE_NAME: !Ref DiceTable
         KAMASUTRA_TABLE_NAME: !Ref KamasutraTable
+        BODAS_TABLE_NAME: !Ref BodasTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
       - !Ref CommonLayer
@@ -105,7 +106,7 @@ Resources:
       LayerName: citas-common
       ContentUri: layers/baselayer/
       CompatibleRuntimes:
-        - python3.11
+        - python3.14
       RetentionPolicy: Delete
 
   # ── API Gateway HTTP API ───────────────────────────────────────────────────
@@ -311,6 +312,91 @@ Resources:
             ApiId: !Ref CitasApi
             Method: DELETE
             Path: /love-phrases/{id}
+
+  # ── Lambda: Bodas CRUD ────────────────────────────────────────────────────
+  BodasFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bodas-crud
+      CodeUri: functions/BodasCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de bodas, invitados, itinerario y logística"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BodasTable
+      Events:
+        ListBodas:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /bodas
+        CreateBoda:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /bodas
+        GetBoda:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /bodas/{bodaId}
+        UpdateBoda:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /bodas/{bodaId}
+        DeleteBoda:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /bodas/{bodaId}
+        PublicBoda:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /bodas/{bodaId}/public
+        ListCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /bodas/{bodaId}/{collection}
+        CreateCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /bodas/{bodaId}/{collection}
+        GetCollectionItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /bodas/{bodaId}/{collection}/{itemId}
+        UpdateCollectionItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /bodas/{bodaId}/{collection}/{itemId}
+        DeleteCollectionItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /bodas/{bodaId}/{collection}/{itemId}
+        UpdateInvitadoRsvp:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PATCH
+            Path: /bodas/{bodaId}/invitados/{itemId}/rsvp
 
   # ── DynamoDB: Tabla Love Phrases ───────────────────────────────────────────
   LovePhrasesTable:
@@ -596,6 +682,43 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  # ── DynamoDB: Tabla Bodas (agregado completo) ────────────────────────────
+  BodasTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: BodasTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: entityType
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: entityType-index
+          KeySchema:
+            - AttributeName: entityType
+              KeyType: HASH
+            - AttributeName: sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ApiUrl:
@@ -631,3 +754,11 @@ Outputs:
   DiceEndpoint:
     Description: "Endpoint de Dice"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/dice"
+
+  BodasTableName:
+    Description: "Nombre de la tabla Bodas"
+    Value: !Ref BodasTable
+
+  BodasEndpoint:
+    Description: "Endpoint base de Bodas"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/bodas"
