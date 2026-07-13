@@ -32,6 +32,9 @@ Globals:
         TABLE_NAME: !Ref PlanesTableName
         CITAS_TABLE_NAME: !Ref CitasTableName
         LOVE_PHRASES_TABLE_NAME: !Ref LovePhrasesTable
+        CHALLENGES_TABLE_NAME: !Ref ChallengesTable
+        DICE_TABLE_NAME: !Ref DiceTable
+        KAMASUTRA_TABLE_NAME: !Ref KamasutraTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
       - !Ref CommonLayer
@@ -390,6 +393,104 @@ Resources:
             Method: DELETE
             Path: /kamasutra/{id}
 
+  # ── Lambda: Challenges CRUD ──────────────────────────────────────────────
+  ChallengesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: challenges-crud
+      CodeUri: functions/ChallengesCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de Retos/Challenges con niveles (suave, picante, atrevido)"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChallengesTable
+      Events:
+        GetAll:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /challenges
+        GetRandom:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /challenges/random
+        GetOne:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /challenges/{id}
+        Create:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /challenges
+        Update:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /challenges/{id}
+        Delete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /challenges/{id}
+
+  # ── Lambda: Dice CRUD (Acciones, Zonas, Modificadores) ──────────────────────
+  DiceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: dice-crud
+      CodeUri: functions/DiceCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de Dados (acciones, zonas, modificadores) con niveles"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DiceTable
+      Events:
+        GetAll:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /dice
+        GetRandom:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /dice/random
+        GetOne:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /dice/{id}
+        Create:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /dice
+        Update:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /dice/{id}
+        Delete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /dice/{id}
+
   # ── DynamoDB: Tabla Kamasutra ──────────────────────────────────────────────
   KamasutraTable:
     Type: AWS::DynamoDB::Table
@@ -422,6 +523,79 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  # ── DynamoDB: Tabla Challenges ────────────────────────────────────────────
+  ChallengesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ChallengesTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: level
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      # GSI para filtrar eficientemente por nivel sin scan completo
+      GlobalSecondaryIndexes:
+        - IndexName: level-index
+          KeySchema:
+            - AttributeName: level
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
+  # ── DynamoDB: Tabla Dice ─────────────────────────────────────────────────
+  DiceTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: DiceTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: level
+          AttributeType: S
+        - AttributeName: diceType
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      # GSI para filtrar por nivel
+      GlobalSecondaryIndexes:
+        - IndexName: level-index
+          KeySchema:
+            - AttributeName: level
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        # GSI para filtrar por tipo de dado
+        - IndexName: diceType-index
+          KeySchema:
+            - AttributeName: diceType
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ApiUrl:
@@ -441,3 +615,19 @@ Outputs:
   KamasutraEndpoint:
     Description: "Endpoint de Kamasutra"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/kamasutra"
+
+  ChallengesTableName:
+    Description: "Nombre de la tabla Challenges"
+    Value: !Ref ChallengesTable
+
+  ChallengesEndpoint:
+    Description: "Endpoint de Challenges"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/challenges"
+
+  DiceTableName:
+    Description: "Nombre de la tabla Dice"
+    Value: !Ref DiceTable
+
+  DiceEndpoint:
+    Description: "Endpoint de Dice"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/dice"
