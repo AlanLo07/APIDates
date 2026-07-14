@@ -19,6 +19,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -200,7 +201,10 @@ def list_bodas():
         query_kwargs["ExclusiveStartKey"] = result["LastEvaluatedKey"]
 
     items.sort(key=lambda item: item.get("fechaEvento", "") or item.get("nombre", ""))
-    return build_response(200, {"items": items, "count": len(items)})
+    return build_response(
+        200,
+        {"items": [_serialize_item_for_response(item) for item in items], "count": len(items)},
+    )
 
 
 def create_boda(data: dict):
@@ -224,7 +228,7 @@ def get_boda(boda_id: str):
     result = table.get_item(Key={"pk": _pk(boda_id), "sk": "META"})
     if "Item" not in result:
         return build_response(404, {"error": f"Boda '{boda_id}' no encontrada"})
-    return build_response(200, result["Item"])
+    return build_response(200, _serialize_item_for_response(result["Item"]))
 
 
 def update_boda(boda_id: str, data: dict):
@@ -303,6 +307,7 @@ def list_collection_items(boda_id: str, collection: str, internal: bool = False)
     prefix = _collection_meta(collection)["prefix"]
     items = _query_partition(_pk(boda_id), begins_with_prefix=f"{prefix}#")
     items = _sort_items(collection, items)
+    items = [_serialize_item_for_response(item) for item in items]
     if internal:
         return items
     return build_response(200, {"items": items, "count": len(items)})
@@ -314,9 +319,10 @@ def create_collection_item(boda_id: str, collection: str, data: dict):
     if not _boda_exists(boda_id):
         return build_response(404, {"error": f"Boda '{boda_id}' no encontrada"})
 
-    _validate_collection_payload(collection, data, is_update=False)
+    payload = _normalize_payload_for_dynamo(collection, data)
+    _validate_collection_payload(collection, payload, is_update=False)
     item_id = data.get("id") or str(uuid.uuid4())
-    item = _normalize_collection_item(boda_id, collection, item_id, data)
+    item = _normalize_collection_item(boda_id, collection, item_id, payload)
 
     table.put_item(
         Item=item,
@@ -340,17 +346,18 @@ def get_collection_item(boda_id: str, collection: str, item_id: str):
     result = table.get_item(Key={"pk": _pk(boda_id), "sk": _sk(collection, item_id)})
     if "Item" not in result:
         return build_response(404, {"error": f"Item '{item_id}' no encontrado en '{collection}'"})
-    return build_response(200, result["Item"])
+    return build_response(200, _serialize_item_for_response(result["Item"]))
 
 
 def update_collection_item(boda_id: str, collection: str, item_id: str, data: dict):
     if not isinstance(data, dict):
         raise ValueError("El body debe ser un objeto JSON")
 
-    _validate_collection_payload(collection, data, is_update=True)
+    payload = _normalize_payload_for_dynamo(collection, data)
+    _validate_collection_payload(collection, payload, is_update=True)
     update_fields = {
         key: value
-        for key, value in data.items()
+        for key, value in payload.items()
         if key not in {"pk", "sk", "id", "bodaId", "entityType", "type", "createdAt"}
     }
     if not update_fields:
@@ -434,6 +441,26 @@ def _normalize_boda(boda_id: str, data: dict) -> dict:
         "createdAt": timestamp,
         "updatedAt": timestamp,
     }
+
+
+def _normalize_payload_for_dynamo(collection: str, data: dict) -> dict:
+    payload = dict(data)
+
+    if collection == "invitados":
+        if "personas" in payload:
+            payload["personas"] = _to_int(payload["personas"], "personas")
+    elif collection == "gastos":
+        for field in ("estimado", "pagado"):
+            if field in payload:
+                payload[field] = _to_float(payload[field], field)
+    elif collection == "proveedores":
+        if "costo" in payload:
+            payload["costo"] = _to_float(payload["costo"], "costo")
+    elif collection == "looks":
+        if "precio" in payload:
+            payload["precio"] = _to_float(payload["precio"], "precio")
+
+    return payload
 
 
 def _normalize_collection_item(boda_id: str, collection: str, item_id: str, data: dict) -> dict:
@@ -522,6 +549,16 @@ def _normalize_collection_item(boda_id: str, collection: str, item_id: str, data
         )
 
     return item
+
+
+def _serialize_item_for_response(value):
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {key: _serialize_item_for_response(item_value) for key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_serialize_item_for_response(item_value) for item_value in value]
+    return value
 
 
 def _validate_collection_payload(collection: str, data: dict, is_update: bool):
@@ -664,15 +701,38 @@ def _nullable_str(value):
     return _clean_str(value)
 
 
-def _to_int(value, field_name: str) -> int:
+def _normalize_numeric_string(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return text
+
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "," in text:
+        text = text.replace(",", ".")
+    return text
+
+
+def _to_int(value, field_name: str) -> Decimal:
     try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
+        if isinstance(value, Decimal):
+            return value.to_integral_value()
+        if isinstance(value, str):
+            return Decimal(_normalize_numeric_string(value)).to_integral_value()
+        return Decimal(str(value)).to_integral_value()
+    except (TypeError, ValueError, InvalidOperation) as exc:
         raise ValueError(f"El campo '{field_name}' debe ser numérico") from exc
 
 
-def _to_float(value, field_name: str) -> float:
+def _to_float(value, field_name: str) -> Decimal:
     try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
+        if isinstance(value, Decimal):
+            return value
+        if isinstance(value, str):
+            return Decimal(_normalize_numeric_string(value))
+        return Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation) as exc:
         raise ValueError(f"El campo '{field_name}' debe ser numérico") from exc
