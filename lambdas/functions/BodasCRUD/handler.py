@@ -20,9 +20,11 @@ import os
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from common.utils import build_response, get_path_param, parse_body
@@ -33,9 +35,12 @@ logger.setLevel(logging.INFO)
 dynamodb = boto3.resource("dynamodb")
 TABLE_NAME = os.environ.get("BODAS_TABLE_NAME", "BodasTable")
 table = dynamodb.Table(TABLE_NAME)
+BUCKET_NAME = os.environ.get("BUCKET_NAME")
+s3_client = boto3.client("s3", config=Config(signature_version="s3v4"))
 
 VALID_RSVP = {"confirmado", "pendiente", "noVa"}
 VALID_ESTADOS_PROVEEDOR = {"pendiente", "confirmado", "pagado"}
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/jpg", "image/heic"}
 
 COLLECTIONS = {
     "invitados": {
@@ -79,6 +84,24 @@ COLLECTIONS = {
         "entity_type": "look_boda",
         "required": {"persona", "prenda"},
         "sort_field": "prenda",
+    },
+    "hospedaje": {
+        "prefix": "HOSPEDAJE",
+        "entity_type": "hospedaje_boda",
+        "required": {"nombre"},
+        "sort_field": "nombre",
+    },
+    "menu": {
+        "prefix": "MENU",
+        "entity_type": "menu_boda",
+        "required": {"nombre"},
+        "sort_field": "momento",
+    },
+    "album": {
+        "prefix": "FOTO",
+        "entity_type": "foto_boda",
+        "required": {"url"},
+        "sort_field": "createdAt",
     },
 }
 
@@ -142,6 +165,9 @@ def lambda_handler(event, context):
                     )
                 },
             )
+
+        if method == "POST" and collection == "album" and raw_path.endswith("/upload-url"):
+            return create_album_upload_url(boda_id, parse_body(event))
 
         if method == "PATCH" and collection == "invitados" and raw_path.endswith("/rsvp"):
             if not item_id:
@@ -259,6 +285,8 @@ def delete_boda(boda_id: str):
     if not items:
         return build_response(404, {"error": f"Boda '{boda_id}' no encontrada"})
 
+    _cleanup_album_assets(items)
+
     with table.batch_writer() as batch:
         for item in items:
             batch.delete_item(Key={"pk": item["pk"], "sk": item["sk"]})
@@ -274,6 +302,9 @@ def get_public_snapshot(boda_id: str):
 
     itinerary = list_collection_items(boda_id, "itinerario", internal=True)
     providers = list_collection_items(boda_id, "proveedores", internal=True)
+    lodging = list_collection_items(boda_id, "hospedaje", internal=True)
+    menu = list_collection_items(boda_id, "menu", internal=True)
+    album = list_collection_items(boda_id, "album", internal=True)
 
     boda = boda_result["Item"]
     public_boda = {
@@ -294,6 +325,9 @@ def get_public_snapshot(boda_id: str):
             "boda": public_boda,
             "itinerario": itinerary,
             "proveedores": providers,
+            "hospedaje": lodging,
+            "menu": menu,
+            "album": album,
         },
     )
 
@@ -342,6 +376,78 @@ def create_collection_item(boda_id: str, collection: str, data: dict):
     return build_response(201, {"message": "Item creado", "bodaId": boda_id, "id": item_id})
 
 
+def create_album_upload_url(boda_id: str, data: dict):
+    if not isinstance(data, dict):
+        raise ValueError("El body debe ser un objeto JSON")
+    if not _boda_exists(boda_id):
+        return build_response(404, {"error": f"Boda '{boda_id}' no encontrada"})
+    if not BUCKET_NAME:
+        logger.error(json.dumps({"level": "🔴", "message": "BUCKET_NAME no configurado para BodasCRUD"}))
+        return build_response(500, {"error": "Configuración de bucket no disponible"})
+
+    file_name = _clean_str(data.get("fileName")) or "image.jpg"
+    file_type = (_clean_str(data.get("fileType")) or "image/jpeg").lower()
+    if file_type not in ALLOWED_IMAGE_TYPES:
+        raise ValueError("'fileType' inválido. Usa image/jpeg, image/png, image/webp o image/heic")
+
+    extension = Path(file_name).suffix.lower().replace(".", "") or _extension_from_type(file_type)
+    photo_id = str(uuid.uuid4())
+    s3_key = f"weddings/{boda_id}/album/{photo_id}.{extension}"
+
+    presigned_url = s3_client.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": BUCKET_NAME, "Key": s3_key, "ContentType": file_type},
+        ExpiresIn=3600,
+    )
+
+    now = _utc_now()
+    item = {
+        "pk": _pk(boda_id),
+        "sk": _sk("album", photo_id),
+        "id": photo_id,
+        "bodaId": boda_id,
+        "entityType": "foto_boda",
+        "type": "foto_boda",
+        "titulo": _clean_str(data.get("titulo")),
+        "url": f"https://{BUCKET_NAME}.s3.amazonaws.com/{s3_key}",
+        "s3Key": s3_key,
+        "mimeType": file_type,
+        "subidoPor": _clean_str(data.get("subidoPor")) or "invitado",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    if _clean_str(data.get("comentario")):
+        item["comentario"] = _clean_str(data.get("comentario"))
+
+    table.put_item(
+        Item=item,
+        ConditionExpression="attribute_not_exists(pk) AND attribute_not_exists(sk)",
+    )
+
+    logger.info(
+        json.dumps(
+            {
+                "level": "🟢",
+                "message": "Upload URL de album creada",
+                "bodaId": boda_id,
+                "photoId": photo_id,
+                "has_comment": bool(item.get("comentario")),
+            }
+        )
+    )
+
+    return build_response(
+        201,
+        {
+            "message": "Upload URL creada",
+            "id": photo_id,
+            "key": s3_key,
+            "uploadUrl": presigned_url,
+            "finalUrl": item["url"],
+        },
+    )
+
+
 def get_collection_item(boda_id: str, collection: str, item_id: str):
     result = table.get_item(Key={"pk": _pk(boda_id), "sk": _sk(collection, item_id)})
     if "Item" not in result:
@@ -376,6 +482,12 @@ def delete_collection_item(boda_id: str, collection: str, item_id: str):
     existing = table.get_item(Key=key)
     if "Item" not in existing:
         return build_response(404, {"error": f"Item '{item_id}' no encontrado en '{collection}'"})
+
+    if collection == "album":
+        album_item = existing["Item"]
+        delete_error = _delete_s3_object(album_item.get("s3Key"))
+        if delete_error:
+            return build_response(502, {"error": "No fue posible eliminar la foto del álbum"})
 
     table.delete_item(Key=key)
     logger.info(
@@ -459,6 +571,14 @@ def _normalize_payload_for_dynamo(collection: str, data: dict) -> dict:
     elif collection == "looks":
         if "precio" in payload:
             payload["precio"] = _to_float(payload["precio"], "precio")
+    elif collection == "menu":
+        if "restricciones" in payload and not isinstance(payload["restricciones"], list):
+            raise ValueError("El campo 'restricciones' debe ser una lista")
+    elif collection == "album":
+        if "mimeType" in payload:
+            payload["mimeType"] = _clean_str(payload["mimeType"]).lower()
+            if payload["mimeType"] and payload["mimeType"] not in ALLOWED_IMAGE_TYPES:
+                raise ValueError("'mimeType' inválido para album")
 
     return payload
 
@@ -547,6 +667,40 @@ def _normalize_collection_item(boda_id: str, collection: str, item_id: str, data
                 "notas": _clean_str(data.get("notas")),
             }
         )
+    elif collection == "hospedaje":
+        item.update(
+            {
+                "nombre": _clean_str(data.get("nombre")),
+                "direccion": _clean_str(data.get("direccion")),
+                "contacto": _clean_str(data.get("contacto")),
+                "checkIn": _clean_str(data.get("checkIn")),
+                "checkOut": _clean_str(data.get("checkOut")),
+                "mapaUrl": _clean_str(data.get("mapaUrl")),
+                "nota": _clean_str(data.get("nota")),
+            }
+        )
+    elif collection == "menu":
+        item.update(
+            {
+                "nombre": _clean_str(data.get("nombre")),
+                "momento": _clean_str(data.get("momento")) or "Recepción",
+                "descripcion": _clean_str(data.get("descripcion")),
+                "tipo": _clean_str(data.get("tipo")),
+                "restricciones": data.get("restricciones") if isinstance(data.get("restricciones"), list) else [],
+                "esVegetariano": bool(data.get("esVegetariano", False)),
+            }
+        )
+    elif collection == "album":
+        item.update(
+            {
+                "titulo": _clean_str(data.get("titulo")),
+                "url": _clean_str(data.get("url")),
+                "s3Key": _clean_str(data.get("s3Key")),
+                "mimeType": _clean_str(data.get("mimeType")).lower(),
+                "subidoPor": _clean_str(data.get("subidoPor")) or "invitado",
+                "comentario": _clean_str(data.get("comentario")),
+            }
+        )
 
     return item
 
@@ -611,6 +765,21 @@ def _validate_collection_payload(collection: str, data: dict, is_update: bool):
                 raise ValueError(f"El campo '{field}' no puede estar vacío")
         if "precio" in data:
             _to_float(data["precio"], "precio")
+    elif collection == "hospedaje":
+        if "nombre" in data and not _clean_str(data.get("nombre")):
+            raise ValueError("El campo 'nombre' no puede estar vacío")
+    elif collection == "menu":
+        if "nombre" in data and not _clean_str(data.get("nombre")):
+            raise ValueError("El campo 'nombre' no puede estar vacío")
+        if "restricciones" in data and not isinstance(data.get("restricciones"), list):
+            raise ValueError("El campo 'restricciones' debe ser una lista")
+    elif collection == "album":
+        if "url" in data and not _clean_str(data.get("url")):
+            raise ValueError("El campo 'url' no puede estar vacío")
+        if "mimeType" in data:
+            mime_type = _clean_str(data.get("mimeType")).lower()
+            if mime_type and mime_type not in ALLOWED_IMAGE_TYPES:
+                raise ValueError("'mimeType' inválido para album")
 
 
 def _run_update(key: dict, update_fields: dict, not_found_message: str, success_message: str = "Item actualizado"):
@@ -663,8 +832,53 @@ def _sort_items(collection: str, items: list[dict]) -> list[dict]:
         return sorted(items, key=lambda item: item.get("hora", ""))
     if collection == "tareas":
         return sorted(items, key=lambda item: (item.get("completada", False), item.get("titulo", "")))
+    if collection == "album":
+        return sorted(items, key=lambda item: item.get("createdAt", ""), reverse=True)
     sort_field = _collection_meta(collection).get("sort_field")
     return sorted(items, key=lambda item: str(item.get(sort_field, "")).lower())
+
+
+def _cleanup_album_assets(items: list[dict]):
+    for item in items:
+        if item.get("entityType") != "foto_boda":
+            continue
+        _delete_s3_object(item.get("s3Key"), swallow_errors=True)
+
+
+def _delete_s3_object(s3_key: str | None, swallow_errors: bool = False) -> bool:
+    if not s3_key:
+        return False
+    if not BUCKET_NAME:
+        logger.warning(
+            json.dumps({"level": "🟡", "message": "No hay BUCKET_NAME para borrar foto", "has_key": True})
+        )
+        return not swallow_errors
+    try:
+        s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
+        return False
+    except ClientError as exc:
+        logger.warning(
+            json.dumps(
+                {
+                    "level": "🟡",
+                    "message": "No se pudo borrar objeto S3 del album",
+                    "code": exc.response.get("Error", {}).get("Code", "Unknown"),
+                }
+            )
+        )
+        return not swallow_errors
+
+
+def _extension_from_type(file_type: str) -> str:
+    if file_type in {"image/jpeg", "image/jpg"}:
+        return "jpg"
+    if file_type == "image/png":
+        return "png"
+    if file_type == "image/webp":
+        return "webp"
+    if file_type == "image/heic":
+        return "heic"
+    return "jpg"
 
 
 def _boda_exists(boda_id: str) -> bool:

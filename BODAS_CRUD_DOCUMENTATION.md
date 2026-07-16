@@ -20,6 +20,9 @@ Se usa una sola tabla llamada `BodasTable` con modelo de agregado por boda.
 - `sk = CANCION#{id}`
 - `sk = PROVEEDOR#{id}`
 - `sk = LOOK#{id}`
+- `sk = HOSPEDAJE#{id}`
+- `sk = MENU#{id}`
+- `sk = FOTO#{id}`
 
 ### GSI
 
@@ -52,6 +55,9 @@ Se usa una sola tabla llamada `BodasTable` con modelo de agregado por boda.
 - `canciones`
 - `proveedores`
 - `looks`
+- `hospedaje`
+- `menu`
+- `album`
 
 Cada item mantiene el `type` esperado por tu modelo Dart:
 
@@ -62,6 +68,9 @@ Cada item mantiene el `type` esperado por tu modelo Dart:
 - `cancion_boda`
 - `proveedor_boda`
 - `look_boda`
+- `hospedaje_boda`
+- `menu_boda`
+- `foto_boda`
 
 ## Endpoints
 
@@ -81,6 +90,42 @@ Cada item mantiene el `type` esperado por tu modelo Dart:
 - `GET /bodas/{bodaId}/{collection}/{itemId}`
 - `PUT /bodas/{bodaId}/{collection}/{itemId}`
 - `DELETE /bodas/{bodaId}/{collection}/{itemId}`
+
+### Upload de fotos para álbum
+
+- `POST /bodas/{bodaId}/album/upload-url`
+
+Body:
+
+```json
+{
+  "fileName": "selfie.jpg",
+  "fileType": "image/jpeg",
+  "titulo": "Entrada al evento",
+  "subidoPor": "Carlos",
+  "comentario": "Llegamos temprano"
+}
+```
+
+Respuesta:
+
+```json
+{
+  "message": "Upload URL creada",
+  "id": "uuid-foto",
+  "key": "weddings/{bodaId}/album/{uuid}.jpg",
+  "uploadUrl": "https://...presigned...",
+  "finalUrl": "https://bucket.s3.amazonaws.com/weddings/{bodaId}/album/{uuid}.jpg"
+}
+```
+
+Tipos de imagen permitidos:
+
+- `image/jpeg`
+- `image/jpg`
+- `image/png`
+- `image/webp`
+- `image/heic`
 
 ### RSVP para invitados
 
@@ -203,6 +248,52 @@ Valores válidos para `estado` en proveedores:
   "precio": 18000,
   "comprado": true,
   "notas": "Ajuste pendiente"
+}
+```
+
+### Hospedaje
+
+`POST /bodas/{bodaId}/hospedaje`
+
+```json
+{
+  "nombre": "Hotel Vista Mar",
+  "direccion": "Av. Costera 123",
+  "contacto": "+52 5512345678",
+  "checkIn": "2027-04-20 15:00",
+  "checkOut": "2027-04-22 12:00",
+  "mapaUrl": "https://maps.google.com/...",
+  "nota": "Mencionar código ANA-LUIS"
+}
+```
+
+### Menú
+
+`POST /bodas/{bodaId}/menu`
+
+```json
+{
+  "nombre": "Ravioles de espinaca",
+  "momento": "Cena",
+  "descripcion": "Con salsa de cuatro quesos",
+  "tipo": "Plato fuerte",
+  "restricciones": ["Sin nuez"],
+  "esVegetariano": true
+}
+```
+
+### Álbum (carga manual opcional)
+
+`POST /bodas/{bodaId}/album`
+
+```json
+{
+  "titulo": "Primer baile",
+  "url": "https://bucket.s3.amazonaws.com/weddings/{bodaId}/album/abc.jpg",
+  "s3Key": "weddings/{bodaId}/album/abc.jpg",
+  "mimeType": "image/jpeg",
+  "subidoPor": "Invitado",
+  "comentario": "Hermoso momento"
 }
 ```
 

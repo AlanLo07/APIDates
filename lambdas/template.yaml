@@ -321,9 +321,16 @@ Resources:
       CodeUri: functions/BodasCRUD/
       Handler: handler.lambda_handler
       Description: "CRUD de bodas, invitados, itinerario y logística"
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ImagesBucket
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref BodasTable
+        - S3WritePolicy:
+            BucketName: !Ref ImagesBucket
+        - S3ReadPolicy:
+            BucketName: !Ref ImagesBucket
       Events:
         ListBodas:
           Type: HttpApi
@@ -373,6 +380,12 @@ Resources:
             ApiId: !Ref CitasApi
             Method: POST
             Path: /bodas/{bodaId}/{collection}
+        CreateAlbumUploadUrl:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /bodas/{bodaId}/{collection}/upload-url
         GetCollectionItem:
           Type: HttpApi
           Properties:
