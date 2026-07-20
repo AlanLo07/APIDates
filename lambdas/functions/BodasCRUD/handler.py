@@ -27,14 +27,14 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, get_path_param, parse_body
+from common.utils import build_response, get_path_param, parse_body # type: ignore
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
 TABLE_NAME = os.environ.get("BODAS_TABLE_NAME", "BodasTable")
-table = dynamodb.Table(TABLE_NAME)
+table = dynamodb.Table(TABLE_NAME) # type: ignore
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
 s3_client = boto3.client("s3", config=Config(signature_version="s3v4"))
 
@@ -136,7 +136,7 @@ def lambda_handler(event, context):
             return list_bodas()
 
         if method == "POST" and not boda_id:
-            return create_boda(parse_body(event))
+            return create_boda(parse_body(event)) # pyright: ignore[reportArgumentType]
 
         if not boda_id:
             return build_response(400, {"error": "Se requiere {bodaId} en la ruta"})
@@ -149,7 +149,7 @@ def lambda_handler(event, context):
                 case "GET":
                     return get_boda(boda_id)
                 case "PUT":
-                    return update_boda(boda_id, parse_body(event))
+                    return update_boda(boda_id, parse_body(event)) # type: ignore
                 case "DELETE":
                     return delete_boda(boda_id)
                 case _:
@@ -167,7 +167,7 @@ def lambda_handler(event, context):
             )
 
         if method == "POST" and collection == "album" and raw_path.endswith("/upload-url"):
-            return create_album_upload_url(boda_id, parse_body(event))
+            return create_album_upload_url(boda_id, parse_body(event)) # pyright: ignore[reportArgumentType]
 
         if method == "PATCH" and collection == "invitados" and raw_path.endswith("/rsvp"):
             if not item_id:
@@ -853,11 +853,10 @@ def _normalize_itinerary_coordinates(data: dict):
 
 
 def _query_partition(partition_key: str, begins_with_prefix: str | None = None) -> list:
-    kwargs = {"KeyConditionExpression": Key("pk").eq(partition_key)}
     if begins_with_prefix:
-        kwargs["KeyConditionExpression"] = Key("pk").eq(partition_key) & Key("sk").begins_with(
-            begins_with_prefix
-        )
+        kwargs = {"KeyConditionExpression": Key("pk").eq(partition_key) & Key("sk").begins_with(begins_with_prefix)}
+    else:
+        kwargs = {"KeyConditionExpression": Key("pk").eq(partition_key)}
 
     items = []
     while True:
