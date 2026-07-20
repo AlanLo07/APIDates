@@ -617,14 +617,18 @@ def _normalize_collection_item(boda_id: str, collection: str, item_id: str, data
             }
         )
     elif collection == "itinerario":
+        coordinates = _normalize_itinerary_coordinates(data)
         item.update(
             {
                 "titulo": _clean_str(data.get("titulo")),
                 "hora": _clean_str(data.get("hora")),
                 "nota": _clean_str(data.get("nota")),
+                "localizacion": _clean_str(data.get("localizacion")),
                 "emoji": _clean_str(data.get("emoji")) or "💒",
             }
         )
+        if coordinates:
+            item["coordenadas"] = coordinates
     elif collection == "gastos":
         item.update(
             {
@@ -739,6 +743,7 @@ def _validate_collection_payload(collection: str, data: dict, is_update: bool):
             raise ValueError("El campo 'titulo' no puede estar vacío")
         if "hora" in data and not _clean_str(data.get("hora")):
             raise ValueError("El campo 'hora' no puede estar vacío")
+        _validate_itinerary_location_payload(data)
     elif collection == "gastos":
         if "concepto" in data and not _clean_str(data.get("concepto")):
             raise ValueError("El campo 'concepto' no puede estar vacío")
@@ -808,6 +813,43 @@ def _run_update(key: dict, update_fields: dict, not_found_message: str, success_
         raise
 
     return build_response(200, {"message": success_message})
+
+
+def _validate_itinerary_location_payload(data: dict):
+    if "coordenadas" not in data:
+        return
+
+    localizacion = _clean_str(data.get("localizacion"))
+    if not localizacion:
+        raise ValueError("El campo 'coordenadas' solo se permite cuando 'localizacion' está informada")
+
+    coordinates = data.get("coordenadas")
+    if not isinstance(coordinates, dict):
+        raise ValueError("El campo 'coordenadas' debe ser un objeto con 'lat' y 'lng'")
+
+    if "lat" not in coordinates or "lng" not in coordinates:
+        raise ValueError("El campo 'coordenadas' debe incluir 'lat' y 'lng'")
+
+    _to_float(coordinates.get("lat"), "coordenadas.lat")
+    _to_float(coordinates.get("lng"), "coordenadas.lng")
+
+
+def _normalize_itinerary_coordinates(data: dict):
+    coordinates = data.get("coordenadas")
+    if not isinstance(coordinates, dict):
+        return None
+
+    localizacion = _clean_str(data.get("localizacion"))
+    if not localizacion:
+        return None
+
+    if "lat" not in coordinates or "lng" not in coordinates:
+        return None
+
+    return {
+        "lat": _to_float(coordinates.get("lat"), "coordenadas.lat"),
+        "lng": _to_float(coordinates.get("lng"), "coordenadas.lng"),
+    }
 
 
 def _query_partition(partition_key: str, begins_with_prefix: str | None = None) -> list:

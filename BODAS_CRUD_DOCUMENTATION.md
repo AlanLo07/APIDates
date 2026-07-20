@@ -189,6 +189,11 @@ Valores válidos para `estado` en proveedores:
   "titulo": "Ceremonia",
   "hora": "17:00",
   "nota": "Llegar 20 minutos antes",
+  "localizacion": "Jardín principal",
+  "coordenadas": {
+    "lat": 20.65341,
+    "lng": -103.32523
+  },
   "emoji": "💒"
 }
 ```
