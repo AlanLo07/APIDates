@@ -7,7 +7,7 @@ from botocore.config import Config
 s3_client = boto3.client('s3', config=Config(signature_version='s3v4'))
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
 
-HOME_MASCOT_PREFIX = 'home-mascot-images/'
+HOME_MASCOT_PREFIX = 'assets/home-mascot-images/'
 
 def build_response(status_code, body):
     return {
@@ -65,10 +65,12 @@ def list_home_mascot_images():
 
     while True:
         kwargs = {'Bucket': BUCKET_NAME, 'Prefix': HOME_MASCOT_PREFIX}
+        print(f"kwargs: {kwargs}")
         if continuation_token:
             kwargs['ContinuationToken'] = continuation_token
 
         result = s3_client.list_objects_v2(**kwargs)
+        print(f"result: {result}")
         for obj in result.get('Contents', []):
             key = obj['Key']
             # Ignorar el "folder" vacío que representa el prefijo
