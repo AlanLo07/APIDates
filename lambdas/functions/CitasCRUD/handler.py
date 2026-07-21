@@ -19,7 +19,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import boto3
 from boto3.dynamodb.conditions import Attr
@@ -30,7 +30,7 @@ logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource('dynamodb')
 TABLE_NAME = os.environ.get('CITAS_TABLE_NAME', 'CitasTable')
-table = dynamodb.Table(TABLE_NAME)
+table = dynamodb.Table(TABLE_NAME) # type: ignore
 
 
 # ─── Constantes del modelo ────────────────────────────────────────────────────
@@ -70,6 +70,149 @@ def build_response(status_code: int, body: dict | list) -> dict:
     }
 
 
+def clean_str(value) -> str:
+    return value.strip() if isinstance(value, str) else ''
+
+
+def normalize_numeric_string(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return text
+
+    if ',' in text and '.' in text:
+        if text.rfind(',') > text.rfind('.'):
+            text = text.replace('.', '').replace(',', '.')
+        else:
+            text = text.replace(',', '')
+    elif ',' in text:
+        text = text.replace(',', '.')
+    return text
+
+
+def to_decimal(value, field_name: str) -> Decimal:
+    try:
+        if isinstance(value, Decimal):
+            return value
+        if isinstance(value, str):
+            normalized = normalize_numeric_string(value)
+            return Decimal(normalized) if normalized else Decimal('0')
+        return Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation) as exc:
+        raise ValueError(f"El campo '{field_name}' debe ser numérico") from exc
+
+
+def normalize_event_documents(value) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("El campo 'documentos' debe ser una lista de links")
+
+    documentos: list[str] = []
+    for index, doc in enumerate(value):
+        if not isinstance(doc, str):
+            raise ValueError(f"El documento en la posición {index} debe ser texto")
+        if cleaned := doc.strip():
+            documentos.append(cleaned)
+    return documentos
+
+
+def normalize_event_itinerary(value) -> dict:
+    if value is None:
+        return {'actividades': []}
+    if not isinstance(value, dict):
+        raise ValueError("El campo 'itinerario' debe ser un objeto")
+
+    raw_activities = value.get('actividades', [])
+    if raw_activities is None:
+        raw_activities = []
+    if not isinstance(raw_activities, list):
+        raise ValueError("El campo 'itinerario.actividades' debe ser una lista")
+
+    actividades: list[dict] = []
+    for index, activity in enumerate(raw_activities):
+        if not isinstance(activity, dict):
+            raise ValueError(f"La actividad en la posición {index} debe ser un objeto")
+
+        fecha = clean_str(activity.get('fecha'))
+        tiempo = clean_str(activity.get('tiempo'))
+        actividad_nombre = clean_str(activity.get('actividad'))
+
+        if not any((fecha, tiempo, actividad_nombre)):
+            continue
+
+        if not all((fecha, tiempo, actividad_nombre)):
+            raise ValueError(
+                f"La actividad en la posición {index} debe incluir fecha, tiempo y actividad"
+            )
+
+        actividades.append({
+            'fecha': fecha,
+            'tiempo': tiempo,
+            'actividad': actividad_nombre,
+        })
+
+    return {'actividades': actividades}
+
+
+def normalize_event_budget(value) -> dict:
+    if value is None:
+        return {
+            'gastado': Decimal('0'),
+            'limite': Decimal('0'),
+            'conceptos': [],
+        }
+    if not isinstance(value, dict):
+        raise ValueError("El campo 'presupuesto' debe ser un objeto")
+
+    raw_concepts = value.get('conceptos', [])
+    if raw_concepts is None:
+        raw_concepts = []
+    if not isinstance(raw_concepts, list):
+        raise ValueError("El campo 'presupuesto.conceptos' debe ser una lista")
+
+    conceptos: list[dict] = []
+    for index, concept in enumerate(raw_concepts):
+        if not isinstance(concept, dict):
+            raise ValueError(f"El concepto en la posición {index} debe ser un objeto")
+
+        concepto = clean_str(concept.get('concepto'))
+        monto_raw = concept.get('monto', 0)
+        monto = to_decimal(monto_raw, f'presupuesto.conceptos[{index}].monto')
+
+        if not concepto and monto == 0:
+            continue
+        if not concepto:
+            raise ValueError(f"El concepto en la posición {index} debe incluir 'concepto'")
+
+        conceptos.append({'concepto': concepto, 'monto': monto})
+
+    return {
+        'gastado': to_decimal(value.get('gastado', 0), 'presupuesto.gastado'),
+        'limite': to_decimal(value.get('limite', 0), 'presupuesto.limite'),
+        'conceptos': conceptos,
+    }
+
+
+def validate_event_shape(data: dict) -> tuple[bool, str]:
+    try:
+        normalize_event_documents(data.get('documentos'))
+        normalize_event_itinerary(data.get('itinerario'))
+        normalize_event_budget(data.get('presupuesto'))
+    except ValueError as exc:
+        return False, str(exc)
+    return True, ''
+
+
+def deep_merge(base: dict, updates: dict) -> dict:
+    merged = dict(base)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 # ─── Validación del modelo ────────────────────────────────────────────────────
 
 def validate_cita(data: dict) -> tuple[bool, str]:
@@ -102,6 +245,9 @@ def validate_cita(data: dict) -> tuple[bool, str]:
             datetime.strptime(data.get('date', ''), '%d-%m-%Y')
         except ValueError:
             return False, f"Fecha inválida: '{data.get('date')}'. Formato esperado: dd-mm-yyyy"
+
+    if event_type == 'evento':
+        return validate_event_shape(data)
 
     return True, ''
 
@@ -147,6 +293,9 @@ def normalize_cita(data: dict) -> dict:
             base['imageUrl'] = image_url
     elif event_type == 'evento':
         base['icon'] = data.get('icon', 'backpack_outlined')
+        base['documentos'] = normalize_event_documents(data.get('documentos'))
+        base['itinerario'] = normalize_event_itinerary(data.get('itinerario'))
+        base['presupuesto'] = normalize_event_budget(data.get('presupuesto'))
 
     return base
 
@@ -218,13 +367,29 @@ def create_item(data: dict):
 
 
 def update_item(item_id: str, data: dict):
-    """PUT /citas/{id} — Actualiza solo los campos enviados (UpdateExpression)."""
+    """PUT /citas/{id} — Actualiza los campos enviados y revalida el item completo."""
     update_fields = {k: v for k, v in data.items() if k != 'id'}
     if not update_fields:
         return build_response(400, {'error': 'No hay campos para actualizar'})
 
+    result = table.get_item(Key={'id': item_id})
+    existing = result.get('Item')
+    if not existing:
+        return build_response(404, {'error': f"Cita '{item_id}' no encontrada"})
+
+    merged = deep_merge(existing, update_fields)
+    merged['id'] = item_id
+
+    valid, msg = validate_cita(merged)
+    if not valid:
+        return build_response(400, {'message': msg})
+
+    normalized_item = normalize_cita(merged)
+
     expr_parts, expr_values, expr_names = [], {}, {}
-    for key, value in update_fields.items():
+    for key, value in normalized_item.items():
+        if key == 'id':
+            continue
         sk, vk = f"#f_{key}", f":v_{key}"
         expr_parts.append(f"{sk} = {vk}")
         expr_values[vk] = value
@@ -392,7 +557,7 @@ def lambda_handler(event, context):
                         return get_cancion_semana_actual()
                     return get_canciones_semana()
                 case 'POST':
-                    return create_cancion_semana(body)
+                    return create_cancion_semana(body) # type: ignore
                 case _:
                     return build_response(405, {'message': f'Método {method} no permitido en /cancion-semana'})
 
@@ -424,7 +589,7 @@ def lambda_handler(event, context):
             case 'PUT':
                 if not item_id:
                     return build_response(400, {'message': 'Se requiere id en la ruta'})
-                return update_item(item_id, body)
+                return update_item(item_id, body) # type: ignore
 
             case 'DELETE':
                 if not item_id:
