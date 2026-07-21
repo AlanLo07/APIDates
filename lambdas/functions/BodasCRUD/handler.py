@@ -571,6 +571,11 @@ def _normalize_payload_for_dynamo(collection: str, data: dict) -> dict:
     elif collection == "looks":
         if "precio" in payload:
             payload["precio"] = _to_float(payload["precio"], "precio")
+    elif collection == "itinerario":
+        if "ubicacionLat" in payload:
+            payload["ubicacionLat"] = _to_float(payload["ubicacionLat"], "coordenadas.lat")
+        if "ubicacionLng" in payload:
+            payload["ubicacionLng"] = _to_float(payload["ubicacionLng"], "coordenadas.lng")
     elif collection == "menu":
         if "restricciones" in payload and not isinstance(payload["restricciones"], list):
             raise ValueError("El campo 'restricciones' debe ser una lista")
@@ -809,6 +814,7 @@ def _run_update(key: dict, update_fields: dict, not_found_message: str, success_
         )
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info(json.dumps({"level": "🔵", "message": "Item no encontrado", "key": key}))
             return build_response(404, {"error": not_found_message})
         raise
 
@@ -961,14 +967,28 @@ def _normalize_numeric_string(value: str) -> str:
     if not text:
         return text
 
+    sign = ""
+    if text[0] in {"+", "-"}:
+        sign = text[0]
+        text = text[1:]
+
     if "," in text and "." in text:
         if text.rfind(",") > text.rfind("."):
             text = text.replace(".", "").replace(",", ".")
         else:
             text = text.replace(",", "")
     elif "," in text:
-        text = text.replace(",", ".")
-    return text
+        parts = text.split(",")
+        if len(parts) > 1 and len(parts[-1]) <= 2:
+            text = text.replace(",", ".")
+        else:
+            text = text.replace(",", "")
+    elif "." in text:
+        parts = text.split(".")
+        if len(parts) == 2 and len(parts[1]) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            text = "".join(parts)
+
+    return sign + text
 
 
 def _to_int(value, field_name: str) -> Decimal:
