@@ -193,11 +193,44 @@ def normalize_event_budget(value) -> dict:
     }
 
 
+def normalize_event_checklist(value) -> dict:
+    if value is None:
+        return {'items': []}
+    if not isinstance(value, dict):
+        raise ValueError("El campo 'checklist' debe ser un objeto")
+
+    raw_items = value.get('items', [])
+    if raw_items is None:
+        raw_items = []
+    if not isinstance(raw_items, list):
+        raise ValueError("El campo 'checklist.items' debe ser una lista")
+
+    items: list[dict] = []
+    for index, item in enumerate(raw_items):
+        if not isinstance(item, dict):
+            raise ValueError(f"El item del checklist en la posición {index} debe ser un objeto")
+
+        nombre = clean_str(item.get('nombre'))
+        incluido = item.get('incluido') is True
+
+        if not nombre and not incluido:
+            continue
+        if not nombre:
+            raise ValueError(
+                f"El item del checklist en la posición {index} debe incluir 'nombre'"
+            )
+
+        items.append({'nombre': nombre, 'incluido': incluido})
+
+    return {'items': items}
+
+
 def validate_event_shape(data: dict) -> tuple[bool, str]:
     try:
         normalize_event_documents(data.get('documentos'))
         normalize_event_itinerary(data.get('itinerario'))
         normalize_event_budget(data.get('presupuesto'))
+        normalize_event_checklist(data.get('checklist'))
     except ValueError as exc:
         return False, str(exc)
     return True, ''
@@ -296,6 +329,7 @@ def normalize_cita(data: dict) -> dict:
         base['documentos'] = normalize_event_documents(data.get('documentos'))
         base['itinerario'] = normalize_event_itinerary(data.get('itinerario'))
         base['presupuesto'] = normalize_event_budget(data.get('presupuesto'))
+        base['checklist'] = normalize_event_checklist(data.get('checklist'))
 
     return base
 
