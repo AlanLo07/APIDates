@@ -36,6 +36,7 @@ Globals:
         DICE_TABLE_NAME: !Ref DiceTable
         KAMASUTRA_TABLE_NAME: !Ref KamasutraTable
         BODAS_TABLE_NAME: !Ref BodasTable
+        FINANCES_TABLE_NAME: !Ref FinancesTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
       - !Ref CommonLayer
@@ -701,6 +702,91 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  # ── Lambda: Finances CRUD ─────────────────────────────────────────────────
+  FinancesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: finances-crud
+      CodeUri: functions/FinancesCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de Finanzas de una Pareja con presupuestos y históricos"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FinancesTable
+      Events:
+        InitCouple:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /finances/init
+        GetCouple:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances
+        GetSummary:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/resumen
+        ListExpenses:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/gastos
+        CreateExpense:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /finances/gastos
+        GetExpense:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/gastos/{gastoId}
+        UpdateExpense:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /finances/gastos/{gastoId}
+        DeleteExpense:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /finances/gastos/{gastoId}
+        SetBudget:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /finances/presupuesto/{monthYear}
+        GetBudget:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/presupuesto/{monthYear}
+        GetMonthlyHistory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/historico/{monthYear}
+        GetAllHistory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/historico
+
   # ── DynamoDB: Tabla Bodas (agregado completo) ────────────────────────────
   BodasTable:
     Type: AWS::DynamoDB::Table
@@ -727,6 +813,55 @@ Resources:
             - AttributeName: entityType
               KeyType: HASH
             - AttributeName: sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
+  # ── DynamoDB: Tabla Finances (PK/SK compuesta) ─────────────────────────────
+  FinancesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: FinancesTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: monthYear
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      # GSI para búsquedas por mes (análisis histórico)
+      GlobalSecondaryIndexes:
+        - IndexName: monthYear-index
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: monthYear
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # GSI para búsquedas por categoría
+        - IndexName: category-index
+          KeySchema:
+            - AttributeName: PK
+              KeyType: HASH
+            - AttributeName: category
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
@@ -781,3 +916,11 @@ Outputs:
   BodasEndpoint:
     Description: "Endpoint base de Bodas"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/bodas"
+
+  FinancesTableName:
+    Description: "Nombre de la tabla Finances"
+    Value: !Ref FinancesTable
+
+  FinancesEndpoint:
+    Description: "Endpoint base de Finanzas de Parejas"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/finances"

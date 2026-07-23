@@ -1,0 +1,2 @@
+# FinancesCRUD - No requiere dependencias adicionales
+# Las dependencias base están en layers/baselayer/python/common/requirements.txt
