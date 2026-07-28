@@ -1,0 +1,71 @@
+```mermaid
+flowchart TD
+    Start([Cliente]) -->|HTTP Request| Gateway[API Gateway]
+    
+    Gateway -->|Routing| Dispatch{Método HTTP?}
+    
+    %% GET Endpoints
+    Dispatch -->|GET /challenges| GetAll1["GET ALL<br/>- Scan table<br/>- Filter by level?<br/>- Paginate"]
+    Dispatch -->|GET /challenges/random| GetRnd1["GET RANDOM<br/>- Scan all<br/>- Filter by level?<br/>- Pick one"]
+    Dispatch -->|GET /challenges/ID| GetOne1["GET ONE BY ID<br/>- Query by id<br/>- Return item"]
+    
+    Dispatch -->|GET /dice| GetAll2["GET ALL<br/>- Scan table<br/>- Filter level?<br/>- Filter diceType?"]
+    Dispatch -->|GET /dice/random| GetRnd2["GET RANDOM<br/>- Scan with filters<br/>- Pick random"]
+    Dispatch -->|GET /dice/ID| GetOne2["GET ONE BY ID<br/>- Query by id<br/>- Return item"]
+    
+    %% POST Endpoint
+    Dispatch -->|POST| CheckPost{Body is<br/>array?}
+    CheckPost -->|Single item| ValidateCRUD["VALIDATE<br/>- Check required fields<br/>- Validate level<br/>- Validate diceType"]
+    CheckPost -->|Array| BulkCreate["BULK CREATE<br/>- Batch writer<br/>- Validate each<br/>- Track errors"]
+    
+    ValidateCRUD --> GenUUID["NORMALIZE<br/>- Generate UUID<br/>- Add timestamps<br/>- Trim strings"]
+    BulkCreate --> GenUUID
+    
+    GenUUID --> CreateItem["CREATE ITEM<br/>- Put in DynamoDB<br/>- Log success"]
+    
+    %% PUT Endpoint
+    Dispatch -->|PUT| UpdateValidate["VALIDATE<br/>- Item must exist<br/>- Validate level<br/>- Validate diceType"]
+    UpdateValidate --> UpdateTS["ADD TIMESTAMP<br/>- Set updatedAt<br/>- Keep createdAt"]
+    UpdateTS --> UpdateItem["UPDATE ITEM<br/>- UpdateExpression<br/>- Only changed fields<br/>- ConditionExpression"]
+    
+    %% DELETE Endpoint
+    Dispatch -->|DELETE| CheckExists["CHECK EXISTS<br/>- Query by id<br/>- Must exist"]
+    CheckExists --> DeleteItem["DELETE ITEM<br/>- Remove from DB<br/>- Return success"]
+    
+    %% Response
+    GetAll1 --> Response["📊 Response"]
+    GetAll2 --> Response
+    GetRnd1 --> Response
+    GetRnd2 --> Response
+    GetOne1 --> Response
+    GetOne2 --> Response
+    CreateItem --> Response
+    UpdateItem --> Response
+    DeleteItem --> Response
+    
+    %% Error Handling
+    Gateway -->|Bad Request| Error400["❌ 400<br/>Bad Request"]
+    Dispatch -->|Unknown Method| Error405["❌ 405<br/>Method Not Allowed"]
+    ValidateCRUD -->|Invalid| Error400
+    UpdateValidate -->|Not Found| Error404["❌ 404<br/>Not Found"]
+    CheckExists -->|Not Found| Error404
+    GenUUID -->|DB Error| Error502["❌ 502<br/>Database Error"]
+    CreateItem -->|DB Error| Error502
+    UpdateItem -->|DB Error| Error502
+    DeleteItem -->|DB Error| Error502
+    
+    Response -->|JSON + CORS| End([Cliente])
+    Error400 --> End
+    Error404 --> End
+    Error405 --> End
+    Error502 --> End
+    
+    style Gateway fill:#ff9900
+    style Response fill:#90EE90
+    style Error400 fill:#ff6b6b
+    style Error404 fill:#ff6b6b
+    style Error405 fill:#ff6b6b
+    style Error502 fill:#ff6b6b
+    style Start fill:#87CEEB
+    style End fill:#87CEEB
+```

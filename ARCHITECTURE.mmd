@@ -1,0 +1,49 @@
+```mermaid
+architecture-beta
+    group internet(internet)[Internet]
+    group aws_api(cloud)[AWS API Gateway]
+    group aws_compute(cloud)[AWS Lambda]
+    group aws_data(cloud)[AWS DynamoDB]
+    
+    %% Internet Layer
+    service client(internet)[Frontend Client] in internet
+    
+    %% API Gateway Layer
+    service api_challenges(server)[API Endpoint<br/>/challenges] in aws_api
+    service api_dice(server)[API Endpoint<br/>/dice] in aws_api
+    service cors(disk)[CORS Handler] in aws_api
+    
+    %% Lambda Compute Layer
+    service lambda_challenges(server)[ChallengesCRUD<br/>Lambda Function] in aws_compute
+    service lambda_dice(server)[DiceCRUD<br/>Lambda Function] in aws_compute
+    service layer_common(disk)[Common Layer<br/>utils.py] in aws_compute
+    
+    %% DynamoDB Data Layer
+    service table_challenges(database)[ChallengesTable<br/>GSI: level] in aws_data
+    service table_dice(database)[DiceTable<br/>GSI: level, diceType] in aws_data
+    service encryption(disk)[SSE Encryption] in aws_data
+    service pitr(disk)[Point-in-Time<br/>Recovery] in aws_data
+    
+    %% Connections: Client to API
+    client:R --> L:cors
+    cors:R --> L:api_challenges
+    cors:R --> L:api_dice
+    
+    %% Connections: API to Lambda
+    api_challenges:B --> T:lambda_challenges
+    api_dice:B --> T:lambda_dice
+    
+    %% Connections: Lambda to Common Layer
+    lambda_challenges:R --> L:layer_common
+    lambda_dice:R --> L:layer_common
+    
+    %% Connections: Lambda to DynamoDB
+    lambda_challenges:B --> T:table_challenges
+    lambda_dice:B --> T:table_dice
+    
+    %% Connections: DynamoDB Internal
+    table_challenges:R --> L:encryption
+    table_dice:R --> L:encryption
+    table_challenges:B --> T:pitr
+    table_dice:B --> T:pitr
+```
