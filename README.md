@@ -69,6 +69,12 @@ Gestión de subida de imágenes y audios con URLs prefirmadas.
 - **Función:** `images-manager`
 - **Endpoints:** `/images/upload-url`, `/audio/upload-url`
 
+### 7️⃣ **Spotify** — Búsqueda y Recomendaciones
+Consulta catálogo público de Spotify para búsquedas y recomendaciones por semilla.
+- **Función:** `spotify-api`
+- **Autenticación backend:** Client Credentials (sin login del usuario final)
+- **Endpoints:** `/spotify/*`
+
 ---
 
 ## 📁 Estructura del Proyecto
@@ -100,6 +106,9 @@ APIDates/
 │   │   │   └── handler.py
 │   │   ├── KamasutraCRUD/
 │   │   │   └── handler.py
+│   │   ├── SpotifyAPI/
+│   │   │   ├── handler.py
+│   │   │   └── requirements.txt
 │   │   └── RandomDates/
 │   │       └── handler.py
 │   └── layers/
@@ -242,6 +251,27 @@ APIDates/
 | PATCH | `/bodas/{bodaId}/invitados/{id}/rsvp` | Confirmar asistencia |
 | POST | `/bodas/{bodaId}/album/upload-url` | URL para fotos |
 
+### Spotify
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/spotify/search?q={texto}&type=track&limit=10&market=CO` | Buscar tracks, artists, albums o playlists |
+| GET | `/spotify/recommendations?q={texto}&limit=20&market=CO&mood=romantico` | Recomendar tracks similares por búsqueda, mood y tuners opcionales |
+| GET | `/spotify/moods` | Listar moods disponibles con tuners sugeridos |
+| GET | `/spotify/genres?q=pop&limit=50` | Listar géneros disponibles para recomendaciones |
+| GET | `/spotify/tracks/{id}?market=CO` | Obtener detalle de track |
+| GET | `/spotify/artists/{id}` | Obtener detalle de artista |
+| GET | `/spotify/artists/{id}/top-tracks?market=CO&limit=10` | Obtener top tracks de un artista |
+
+**Notas:**
+- `type` permitido en búsqueda: `track`, `artist`, `album`, `playlist`.
+- `market` por defecto viene de `SpotifyMarket` en el deploy (ejemplo: `CO`).
+- `recommendations` usa fallback por artista/top-tracks cuando no encuentra track semilla.
+- Presets de `mood` disponibles: `romantico`, `fiesta`, `chill`, `focus`.
+- `GET /spotify/moods` devuelve catálogo de moods con descripción y tuners para UI dinámica.
+- Tuners opcionales en `recommendations`: `target_energy`, `target_valence`, `target_danceability`, `min_popularity`, `max_popularity`, `target_popularity`, `min_tempo`, `target_tempo`, `max_tempo` y variantes `min_/max_/target_` de acousticness, danceability, energy, instrumentalness, liveness, speechiness, valence.
+- Si envías `mood` y además tuners explícitos, los tuners explícitos tienen prioridad.
+- Estos endpoints usan catálogo público y no exponen `client_secret` al frontend.
+
 ---
 
 ## 🚀 Despliegue
@@ -284,6 +314,13 @@ Allow IAM role creation: y
 Save parameters: y
 ```
 
+Cuando SAM pregunte parámetros de Spotify, configura:
+```
+SpotifyClientId: <tu_client_id>
+SpotifyClientSecret: <tu_client_secret>
+SpotifyMarket: CO
+```
+
 #### 4. Despliegue Rápido (Siguientes veces)
 ```bash
 sam deploy
@@ -315,6 +352,7 @@ Lambda Functions (Python 3.14)
   ├─ PhrasesCRUD
   ├─ ImagesManager
   ├─ KamasutraCRUD
+  ├─ SpotifyAPI
   └─ RandomDates
   ↓
 Shared Layer (common/utils.py)
@@ -360,6 +398,12 @@ curl -X POST http://localhost:3000/challenges \
 
 # Obtener todos
 curl http://localhost:3000/challenges
+
+# Buscar tracks en Spotify
+curl "http://localhost:3000/spotify/search?q=morat&type=track&limit=5&market=CO"
+
+# Recomendaciones desde texto de búsqueda
+curl "http://localhost:3000/spotify/recommendations?q=coldplay&limit=10&market=CO"
 ```
 
 ---

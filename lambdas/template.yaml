@@ -15,6 +15,19 @@ Parameters:
     Type: String
     Default: Citas
     Description: "Nombre de la tabla Citas ya existente"
+  SpotifyClientId:
+    Type: String
+    Default: ""
+    Description: "Spotify App Client ID"
+  SpotifyClientSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: "Spotify App Client Secret"
+  SpotifyMarket:
+    Type: String
+    Default: CO
+    Description: "Market default ISO 3166-1 alpha-2 para Spotify"
   # KamasutraTableName:
   #   Type: String
   #   Default: KamasutraTable
@@ -787,6 +800,63 @@ Resources:
             Method: GET
             Path: /finances/historico
 
+  # ── Lambda: Spotify API (catalogo y recomendaciones por busqueda) ─────────
+  SpotifyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: spotify-api
+      CodeUri: functions/SpotifyAPI/
+      Handler: handler.lambda_handler
+      Description: "Endpoints GET de Spotify para busqueda y recomendaciones"
+      Environment:
+        Variables:
+          SPOTIFY_CLIENT_ID: !Ref SpotifyClientId
+          SPOTIFY_CLIENT_SECRET: !Ref SpotifyClientSecret
+          SPOTIFY_MARKET: !Ref SpotifyMarket
+      Events:
+        SpotifySearch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/search
+        SpotifyRecommendations:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/recommendations
+        SpotifyMoods:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/moods
+        SpotifyGenres:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/genres
+        SpotifyGetTrack:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/tracks/{id}
+        SpotifyGetArtist:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/artists/{id}
+        SpotifyGetArtistTopTracks:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/artists/{id}/top-tracks
+
   # ── DynamoDB: Tabla Bodas (agregado completo) ────────────────────────────
   BodasTable:
     Type: AWS::DynamoDB::Table
@@ -924,3 +994,7 @@ Outputs:
   FinancesEndpoint:
     Description: "Endpoint base de Finanzas de Parejas"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/finances"
+
+  SpotifyEndpoint:
+    Description: "Endpoint base de Spotify"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/spotify"
