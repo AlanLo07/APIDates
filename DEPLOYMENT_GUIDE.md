@@ -75,7 +75,7 @@ sam build
 **Esperado:**
 ```
 Building resources...
-Building the package (python3.14)
+ Building the package (python3.13)
 Successfully packaged code under ./build directory
 ```
 
