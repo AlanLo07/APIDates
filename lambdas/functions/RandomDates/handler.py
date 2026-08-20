@@ -31,10 +31,21 @@ citas_table = dynamodb.Table(CITAS_TABLE)
 
 
 def lambda_handler(event, context):
-    if event["requestContext"]["http"]["method"] == "OPTIONS":
+    method = event.get("requestContext", {}).get("http", {}).get("method", "")
+    query_params = event.get("queryStringParameters") or {}
+    logger.info(json.dumps({
+        "level": "⚪️",
+        "message": "Solicitud RandomDates",
+        "method": method,
+        "has_tipo": bool(query_params.get("tipo")),
+        "solo_nuevos": query_params.get("soloNuevos", "false"),
+        "guardar_cita": query_params.get("guardarCita", "true"),
+    }, ensure_ascii=False))
+
+    if method == "OPTIONS":
+        logger.info(json.dumps({"level": "🟢", "message": "Preflight CORS RandomDates"}, ensure_ascii=False))
         return build_response(200, {})
 
-    query_params = event.get("queryStringParameters") or {}
     tipo = query_params.get("tipo")               # Ej: "restaurante", "parque"
     solo_nuevos = query_params.get("soloNuevos", "false").lower() == "true"
     guardar_cita = query_params.get("guardarCita", "true").lower() == "true"
@@ -42,8 +53,16 @@ def lambda_handler(event, context):
     try:
         # 1. Obtener planes del catálogo
         planes = _fetch_planes(tipo=tipo, solo_nuevos=solo_nuevos)
+        logger.info(json.dumps({
+            "level": "🔵",
+            "message": "Planes filtrados para selección aleatoria",
+            "count": len(planes),
+            "has_tipo": bool(tipo),
+            "solo_nuevos": solo_nuevos,
+        }, ensure_ascii=False))
 
         if not planes:
+            logger.warning(json.dumps({"level": "🟡", "message": "No hay planes disponibles"}, ensure_ascii=False))
             return build_response(404, {
                 "error": "No hay planes disponibles con los filtros aplicados",
                 "filtros": {"tipo": tipo, "soloNuevos": solo_nuevos},
@@ -51,7 +70,11 @@ def lambda_handler(event, context):
 
         # 2. Elegir plan aleatorio
         plan_elegido = random.choice(planes)
-        logger.info(f"Plan elegido: {plan_elegido.get('id')} — {plan_elegido.get('nombre')}")
+        logger.info(json.dumps({
+            "level": "🟢",
+            "message": "Plan aleatorio seleccionado",
+            "plan_id": plan_elegido.get("id"),
+        }, ensure_ascii=False))
 
         # 3. Generar fecha sugerida (+7 días, hora del mediodía UTC)
         fecha_sugerida = (
@@ -62,6 +85,12 @@ def lambda_handler(event, context):
         cita_id = None
         if guardar_cita:
             cita_id = _crear_cita_sugerida(plan_elegido["id"], fecha_sugerida)
+            logger.info(json.dumps({
+                "level": "🟢",
+                "message": "Cita sugerida guardada",
+                "cita_id": cita_id,
+                "plan_id": plan_elegido.get("id"),
+            }, ensure_ascii=False))
 
         return build_response(200, {
             "plan": plan_elegido,
@@ -71,10 +100,14 @@ def lambda_handler(event, context):
         })
 
     except ClientError as e:
-        logger.error(f"DynamoDB error: {e.response['Error']}")
+        logger.error(json.dumps({
+            "level": "🔴",
+            "message": "Error DynamoDB en RandomDates",
+            "code": e.response.get("Error", {}).get("Code", "Unknown"),
+        }, ensure_ascii=False))
         return build_response(502, {"error": "Error de base de datos"})
     except Exception:
-        logger.exception("Error inesperado en random-plan")
+        logger.exception(json.dumps({"level": "🔴", "message": "Error inesperado en RandomDates"}, ensure_ascii=False))
         return build_response(500, {"error": "Error interno del servidor"})
 
 
@@ -98,7 +131,9 @@ def _fetch_planes(tipo: str | None, solo_nuevos: bool) -> list:
 
     # Maneja paginación automáticamente (por si hay muchos planes)
     items = []
+    page_count = 0
     while True:
+        page_count += 1
         result = planes_table.scan(**params)
         items.extend(result.get("Items", []))
         last_key = result.get("LastEvaluatedKey")
@@ -106,6 +141,12 @@ def _fetch_planes(tipo: str | None, solo_nuevos: bool) -> list:
             break
         params["ExclusiveStartKey"] = last_key
 
+    logger.info(json.dumps({
+        "level": "🔵",
+        "message": "Scan de planes completado",
+        "pages": page_count,
+        "count": len(items),
+    }, ensure_ascii=False))
     return items
 
 

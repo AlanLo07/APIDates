@@ -565,9 +565,17 @@ def lambda_handler(event, context):
     qparams = event.get('queryStringParameters') or {}
     item_id = params.get('id')
 
-    logger.info(json.dumps({'method': method, 'path': path, 'id': item_id}))
+    logger.info(json.dumps({
+        'level': '⚪️',
+        'message': 'Solicitud CitasCRUD',
+        'method': method,
+        'path': path,
+        'has_id': bool(item_id),
+        'function': getattr(context, 'function_name', 'unknown'),
+    }, ensure_ascii=False))
 
     if method == 'OPTIONS':
+        logger.info(json.dumps({'level': '🟢', 'message': 'Preflight CORS CitasCRUD'}, ensure_ascii=False))
         return build_response(200, {})
 
     # Parseo de body una sola vez
@@ -576,6 +584,7 @@ def lambda_handler(event, context):
         try:
             body = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
+            logger.warning(json.dumps({'level': '🟡', 'message': 'Body JSON inválido en CitasCRUD'}, ensure_ascii=False))
             return build_response(400, {'message': 'Body JSON inválido'})
 
     try:
@@ -634,8 +643,12 @@ def lambda_handler(event, context):
                 return build_response(405, {'message': f'Método {method} no permitido'})
 
     except ClientError as e:
-        logger.error(json.dumps({'dynamo_error': e.response['Error']}))
+        logger.error(json.dumps({
+            'level': '🔴',
+            'message': 'Error DynamoDB en CitasCRUD',
+            'code': e.response.get('Error', {}).get('Code', 'Unknown'),
+        }, ensure_ascii=False))
         return build_response(502, {'error': 'Error de base de datos'})
     except Exception:
-        logger.exception('Error inesperado')
+        logger.exception('🔴 Error inesperado en CitasCRUD')
         return build_response(500, {'error': 'Error interno del servidor'})

@@ -625,15 +625,20 @@ def get_summary():
 
 def lambda_handler(event, context):
     """🔵 Maneja todas las rutas de la API de finanzas."""
-    logger.info(json.dumps({"event_keys": list(event.keys())}))
-
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
     path = event.get("rawPath", "")
-    body = parse_body(event)
 
-    logger.info(f"⚪️  {method} {path}")
+    logger.info(json.dumps({
+        "level": "⚪️",
+        "message": "Solicitud FinancesCRUD",
+        "method": method,
+        "path": path,
+        "function": getattr(context, "function_name", "unknown"),
+    }, ensure_ascii=False))
 
     try:
+        body = parse_body(event)
+
         # ──────── POST /finances/init ─────────────────────────────────────────
         if method == "POST" and path == "/finances/init":
             required = {"user1Email", "user2Email", "user1Name", "user2Name"}
@@ -726,5 +731,5 @@ def lambda_handler(event, context):
         return build_response(404, {"error": "Ruta no encontrada"})
 
     except Exception as e:
-        logger.error(f"🔴 Error inesperado: {str(e)}", exc_info=True)
+        logger.exception("🔴 Error inesperado en FinancesCRUD")
         return build_response(500, {"error": "Error interno del servidor"})

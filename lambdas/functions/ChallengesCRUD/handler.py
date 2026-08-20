@@ -42,14 +42,14 @@ REQUIRED_FIELDS = {"text", "emoji", "level"}
 # ─── Handler principal ────────────────────────────────────────────────────────
 
 def lambda_handler(event, context):
-    logger.info(json.dumps({"event_keys": list(event.keys())}))
-
     method      = event.get("requestContext", {}).get("http", {}).get("method", "")
     raw_path    = event.get("rawPath", "")
     item_id     = get_path_param(event, "id")
     query_params = event.get("queryStringParameters") or {}
+    logger.info(json.dumps({"level": "⚪️", "message": "Solicitud ChallengesCRUD", "method": method, "path": raw_path, "has_id": bool(item_id), "function": getattr(context, "function_name", "unknown")}, ensure_ascii=False))
 
     if method == "OPTIONS":
+        logger.info(json.dumps({"level": "🟢", "message": "Preflight CORS ChallengesCRUD"}, ensure_ascii=False))
         return build_response(200, {})
 
     try:
@@ -83,12 +83,13 @@ def lambda_handler(event, context):
                 return build_response(405, {"error": f"Método {method} no permitido"})
 
     except ValueError as e:
+        logger.warning(json.dumps({"level": "🟡", "message": "Validación fallida en ChallengesCRUD", "error": str(e)}, ensure_ascii=False))
         return build_response(400, {"error": str(e)})
     except ClientError as e:
-        logger.error(f"DynamoDB error: {e.response['Error']}")
+        logger.error(json.dumps({"level": "🔴", "message": "Error DynamoDB en ChallengesCRUD", "code": e.response.get("Error", {}).get("Code", "Unknown")}, ensure_ascii=False))
         return build_response(502, {"error": "Error de base de datos"})
     except Exception:
-        logger.exception("Error inesperado")
+        logger.exception("🔴 Error inesperado en ChallengesCRUD")
         return build_response(500, {"error": "Error interno del servidor"})
 
 
