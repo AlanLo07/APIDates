@@ -193,9 +193,28 @@ def update_item(item_id: str, data: dict):
         return build_response(404, {"error": f"Frase '{item_id}' no encontrada"})
 
     data["id"] = item_id
-    _validate(data)
-    item = _normalize(data)
-    table.put_item(Item=item)
+    merged = {**existing["Item"], **data}
+    _validate(merged)
+    item = _normalize(merged)
+
+    update_fields = {key: value for key, value in item.items() if key != "id"}
+    expression_parts = []
+    expression_values = {}
+    expression_names = {}
+    for key, value in update_fields.items():
+        name_key = f"#f_{key}"
+        value_key = f":v_{key}"
+        expression_parts.append(f"{name_key} = {value_key}")
+        expression_names[name_key] = key
+        expression_values[value_key] = value
+
+    table.update_item(
+        Key={"id": item_id},
+        UpdateExpression="SET " + ", ".join(expression_parts),
+        ExpressionAttributeNames=expression_names,
+        ExpressionAttributeValues=expression_values,
+        ConditionExpression=Attr("id").exists(),
+    )
     return build_response(200, {"message": "Frase actualizada con éxito", "id": item_id})
 
 

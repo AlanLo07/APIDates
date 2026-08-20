@@ -48,9 +48,7 @@ def lambda_handler(event, context):
             case "GET":
                 return get_item(item_id) if item_id else get_all_items(event)
             case "POST":
-                body = json.loads(event["body"])
-                if "body" in body: 
-                    body = json.loads(body["body"])
+                body = parse_body(event)
                 if isinstance(body, list):
                     return bulk_create(body)
                 return create_item(body)
@@ -90,7 +88,7 @@ def get_item(item_id: str):
 
 
 def get_all_items(event: dict):
-    """Scan con paginación. Acepta ?lastKey=<token> para paginar."""
+    """Recorre todas las páginas del scan y acepta un punto inicial opcional."""
     params: dict = {"Limit": 300}
 
     # Filtrado opcional por typeLocation: /planes?type=restaurante
@@ -103,13 +101,15 @@ def get_all_items(event: dict):
     if last_key:
         params["ExclusiveStartKey"] = {"nombre": last_key}
 
-    result = table.scan(**params)
-    response_body = {
-        "items": result.get("Items", []),
-        "count": result.get("Count", 0),
-    }
-    if next_key := result.get("LastEvaluatedKey"):
-        response_body["nextKey"] = next_key.get("nombre")
+    items = []
+    while True:
+        result = table.scan(**params)
+        items.extend(result.get("Items", []))
+        if not (last_evaluated_key := result.get("LastEvaluatedKey")):
+            break
+        params["ExclusiveStartKey"] = last_evaluated_key
+
+    response_body = {"items": items, "count": len(items)}
 
     return build_response(200, response_body)
 
@@ -184,24 +184,35 @@ def update_item(item_id: str, data: dict):
 
 
 def delete_item(item_id: str):
-    table.delete_item(
-        Key={"nombre": item_id},
-        ConditionExpression=Attr("nombre").exists(),
-    )
+    try:
+        table.delete_item(
+            Key={"nombre": item_id},
+            ConditionExpression=Attr("nombre").exists(),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return build_response(404, {"error": f"Plan '{item_id}' no encontrado"})
+        raise
     return build_response(200, {"message": "Plan eliminado", "nombre": item_id})
 
 
 def reset_all_ratings():
-    """Resetea ratings a 0 — usa batch_writer para mayor eficiencia."""
-    result = table.scan(ProjectionExpression="nombre")
-    items = result.get("Items", [])
-    with table.batch_writer() as batch:
-        for item in items:
-            table.update_item(
-                Key={"nombre": item["nombre"]},
-                UpdateExpression="SET rating = :zero",
-                ExpressionAttributeValues={":zero": 0},
-            )
+    """Resetea ratings a 0 recorriendo todas las páginas del scan."""
+    items = []
+    scan_kwargs = {"ProjectionExpression": "nombre"}
+    while True:
+        result = table.scan(**scan_kwargs)
+        items.extend(result.get("Items", []))
+        if not (last_evaluated_key := result.get("LastEvaluatedKey")):
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+
+    for item in items:
+        table.update_item(
+            Key={"nombre": item["nombre"]},
+            UpdateExpression="SET rating = :zero",
+            ExpressionAttributeValues={":zero": 0},
+        )
     return build_response(200, {"message": f"Ratings reseteados en {len(items)} planes"})
 
 

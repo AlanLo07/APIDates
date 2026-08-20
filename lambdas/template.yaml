@@ -36,7 +36,7 @@ Parameters:
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
   Function:
-    Runtime: python3.14
+    Runtime: python3.13
     Timeout: 29
     MemorySize: 128
     Tracing: Active
@@ -126,7 +126,7 @@ Resources:
       LayerName: citas-common
       ContentUri: layers/baselayer/
       CompatibleRuntimes:
-        - python3.14
+        - python3.13
       RetentionPolicy: Delete
 
   # ── API Gateway HTTP API ───────────────────────────────────────────────────

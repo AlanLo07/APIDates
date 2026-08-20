@@ -25,6 +25,8 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
+from common.utils import build_response, get_path_param, parse_body
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -46,28 +48,6 @@ REQUIRED_FIELDS: dict[str, list[str]] = {
 
 # ISO week key: YYYY-WNN  →  "2026-W24"
 WEEK_KEY_RE = re.compile(r'^\d{4}-W\d{2}$')
-
-
-# ─── Serialización ────────────────────────────────────────────────────────────
-
-class DecimalEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, Decimal):
-            return int(obj) if obj % 1 == 0 else float(obj)
-        return super().default(obj)
-
-
-def build_response(status_code: int, body: dict | list) -> dict:
-    return {
-        'statusCode': status_code,
-        'headers': {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        },
-        'body': json.dumps(body, cls=DecimalEncoder),
-    }
 
 
 def clean_str(value) -> str:
@@ -472,8 +452,14 @@ def open_carta(item_id: str):
             'openDate': item['date'],
         })
 
+    table.update_item(
+        Key={'id': item_id},
+        UpdateExpression='SET #abierta = :abierta',
+        ExpressionAttributeNames={'#abierta': 'abierta'},
+        ExpressionAttributeValues={':abierta': True},
+        ConditionExpression=Attr('id').exists(),
+    )
     item['abierta'] = True
-    table.put_item(Item=item)
     return build_response(200, {'message': 'Carta abierta', 'item': item})
 
 
@@ -563,7 +549,7 @@ def lambda_handler(event, context):
     path    = event.get('rawPath', '')
     params  = event.get('pathParameters') or {}
     qparams = event.get('queryStringParameters') or {}
-    item_id = params.get('id')
+    item_id = get_path_param(event, 'id')
 
     logger.info(json.dumps({
         'level': '⚪️',
@@ -579,15 +565,9 @@ def lambda_handler(event, context):
         return build_response(200, {})
 
     # Parseo de body una sola vez
-    body: dict | list = {}
-    if raw := event.get('body'):
-        try:
-            body = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(json.dumps({'level': '🟡', 'message': 'Body JSON inválido en CitasCRUD'}, ensure_ascii=False))
-            return build_response(400, {'message': 'Body JSON inválido'})
-
     try:
+        body: dict | list = parse_body(event)
+
         # ── /citas/cancion-semana ─────────────────────────────────────────────
         # IMPORTANTE: estas rutas deben evaluarse ANTES que /citas/{id}
         # para que "cancion-semana" no sea interpretado como un {id}.
