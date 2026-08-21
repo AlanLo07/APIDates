@@ -6,7 +6,62 @@ Mejoras aplicadas:
 - Constantes y helpers reutilizables
 """
 import json
+import logging
 from decimal import Decimal
+
+
+LOG_LEVELS = {
+    "⚪️": logging.INFO,
+    "🟢": logging.INFO,
+    "🔵": logging.INFO,
+    "🟡": logging.WARNING,
+    "🔴": logging.ERROR,
+    "🟤": logging.DEBUG,
+}
+
+
+def log_event(logger, indicator: str, message: str, **fields) -> None:
+    """Emite logs JSON con semáforo y metadatos no sensibles."""
+    if indicator not in LOG_LEVELS:
+        raise ValueError(f"Indicador de log no soportado: {indicator}")
+
+    payload = {"level": indicator, "message": message, **fields}
+    logger.log(LOG_LEVELS[indicator], json.dumps(payload, ensure_ascii=False))
+
+
+def scan_all(table, filter_expression=None, **scan_kwargs) -> list[dict]:
+    """Recorre todas las páginas de un Scan y devuelve sus items."""
+    items = []
+    request = dict(scan_kwargs)
+    if filter_expression is not None:
+        request["FilterExpression"] = filter_expression
+
+    while True:
+        response = table.scan(**request)
+        items.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+        request["ExclusiveStartKey"] = last_key
+
+
+def query_all(table, **query_kwargs) -> list[dict]:
+    """Recorre todas las páginas de una Query y devuelve sus items."""
+    items = []
+    request = dict(query_kwargs)
+    total_limit = request.get("Limit")
+
+    while True:
+        if total_limit is not None:
+            request["Limit"] = min(total_limit - len(items), total_limit)
+        response = table.query(**request)
+        items.extend(response.get("Items", []))
+        if total_limit is not None and len(items) >= total_limit:
+            return items[:total_limit]
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return items
+        request["ExclusiveStartKey"] = last_key
 
 
 class DecimalEncoder(json.JSONEncoder):

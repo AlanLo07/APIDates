@@ -19,7 +19,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, parse_body, get_path_param
+from common.utils import build_response, get_path_param, log_event, parse_body, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -101,13 +101,7 @@ def get_all_items(event: dict):
     if last_key:
         params["ExclusiveStartKey"] = {"nombre": last_key}
 
-    items = []
-    while True:
-        result = table.scan(**params)
-        items.extend(result.get("Items", []))
-        if not (last_evaluated_key := result.get("LastEvaluatedKey")):
-            break
-        params["ExclusiveStartKey"] = last_evaluated_key
+    items = scan_all(table, **params)
 
     response_body = {"items": items, "count": len(items)}
 
@@ -120,7 +114,7 @@ def create_item(data: dict):
     data.setdefault("isVisited", False)
     data.setdefault("rating", 0)
     data.setdefault("tags", [])
-    logger.info(f"Creando plan: {data['nombre']}")
+    log_event(logger, "🟢", "Plan creado", item_name=data["nombre"])
     table.put_item(Item=data)
     return build_response(201, {"message": "Plan creado", "nombre": data["nombre"]})
 
@@ -198,14 +192,7 @@ def delete_item(item_id: str):
 
 def reset_all_ratings():
     """Resetea ratings a 0 recorriendo todas las páginas del scan."""
-    items = []
-    scan_kwargs = {"ProjectionExpression": "nombre"}
-    while True:
-        result = table.scan(**scan_kwargs)
-        items.extend(result.get("Items", []))
-        if not (last_evaluated_key := result.get("LastEvaluatedKey")):
-            break
-        scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+    items = scan_all(table, ProjectionExpression="nombre")
 
     for item in items:
         table.update_item(

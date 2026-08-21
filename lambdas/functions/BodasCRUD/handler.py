@@ -27,7 +27,7 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, get_path_param, parse_body # type: ignore
+from common.utils import build_response, get_path_param, parse_body, query_all # type: ignore
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -213,18 +213,11 @@ def lambda_handler(event, context):
 
 
 def list_bodas():
-    items = []
     query_kwargs = {
         "IndexName": "entityType-index",
         "KeyConditionExpression": Key("entityType").eq("boda") & Key("sk").begins_with("META"),
     }
-
-    while True:
-        result = table.query(**query_kwargs)
-        items.extend(result.get("Items", []))
-        if not result.get("LastEvaluatedKey"):
-            break
-        query_kwargs["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+    items = query_all(table, **query_kwargs)
 
     items.sort(key=lambda item: item.get("fechaEvento", "") or item.get("nombre", ""))
     return build_response(
@@ -864,14 +857,7 @@ def _query_partition(partition_key: str, begins_with_prefix: str | None = None) 
     else:
         kwargs = {"KeyConditionExpression": Key("pk").eq(partition_key)}
 
-    items = []
-    while True:
-        result = table.query(**kwargs)
-        items.extend(result.get("Items", []))
-        if not result.get("LastEvaluatedKey"):
-            break
-        kwargs["ExclusiveStartKey"] = result["LastEvaluatedKey"]
-    return items
+    return query_all(table, **kwargs)
 
 
 def _sort_items(collection: str, items: list[dict]) -> list[dict]:

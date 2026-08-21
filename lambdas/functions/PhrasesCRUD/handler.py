@@ -21,7 +21,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, parse_body, get_path_param
+from common.utils import build_response, get_path_param, log_event, parse_body, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -112,15 +112,7 @@ def get_all_items(query_params: dict):
     if last_key := query_params.get("lastKey"):
         params["ExclusiveStartKey"] = {"id": last_key}
 
-    # Scan paginado
-    items = []
-    while True:
-        result = table.scan(**params)
-        items.extend(result.get("Items", []))
-        last_evaluated = result.get("LastEvaluatedKey")
-        if not last_evaluated:
-            break
-        params["ExclusiveStartKey"] = last_evaluated
+    items = scan_all(table, **params)
 
     response_body = {
         "items": items,
@@ -138,27 +130,20 @@ def get_random(query_params: dict):
             return build_response(400, {"error": f"Tipo inválido: '{phrase_type}'"})
         params["FilterExpression"] = Attr("type").eq(phrase_type)
 
-    # Scan completo para el random (tabla pequeña ~100 items)
-    items = []
-    while True:
-        result = table.scan(**params)
-        items.extend(result.get("Items", []))
-        if not result.get("LastEvaluatedKey"):
-            break
-        params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+    items = scan_all(table, **params)
 
     if not items:
         return build_response(404, {"error": "No hay frases disponibles con los filtros aplicados"})
 
     chosen = random.choice(items)
-    logger.info(f"Frase aleatoria elegida: {chosen.get('id')} — {chosen.get('title')}")
+    log_event(logger, "🔵", "Frase aleatoria elegida", item_id=chosen.get("id"), title=chosen.get("title"))
     return build_response(200, chosen)
 
 
 def create_item(data: dict):
     _validate(data)
     item = _normalize(data)
-    logger.info(f"Creando frase: {item['id']} — {item['title']}")
+    log_event(logger, "🟢", "Frase creada", item_id=item["id"], title=item["title"])
     table.put_item(Item=item)
     return build_response(201, {"message": "Frase creada con éxito", "id": item["id"]})
 

@@ -23,7 +23,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, parse_body, get_path_param
+from common.utils import build_response, get_path_param, log_event, parse_body, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -117,15 +117,7 @@ def get_all_items(query_params: dict):
     if last_key := query_params.get("lastKey"):
         params["ExclusiveStartKey"] = {"id": last_key}
 
-    # Scan paginado — recorre todas las páginas
-    items = []
-    while True:
-        result = table.scan(**params)
-        items.extend(result.get("Items", []))
-        last_evaluated = result.get("LastEvaluatedKey")
-        if not last_evaluated:
-            break
-        params["ExclusiveStartKey"] = last_evaluated
+    items = scan_all(table, **params)
 
     return build_response(200, {"items": items, "count": len(items)})
 
@@ -139,13 +131,7 @@ def get_random(query_params: dict):
             return build_response(400, {"error": f"Nivel inválido: '{level}'"})
         params["FilterExpression"] = Attr("level").eq(level)
 
-    items = []
-    while True:
-        result = table.scan(**params)
-        items.extend(result.get("Items", []))
-        if not result.get("LastEvaluatedKey"):
-            break
-        params["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+    items = scan_all(table, **params)
 
     if not items:
         return build_response(
@@ -154,14 +140,14 @@ def get_random(query_params: dict):
         )
 
     chosen = random.choice(items)
-    logger.info(f"Reto aleatorio: {chosen.get('id')}")
+    log_event(logger, "🔵", "Reto aleatorio", item_id=chosen.get("id"))
     return build_response(200, chosen)
 
 
 def create_item(data: dict):
     _validate(data)
     item = _normalize(data)
-    logger.info(f"Creando reto: {item['id']}")
+    log_event(logger, "🟢", "Reto creado", item_id=item["id"])
     table.put_item(Item=item)
     return build_response(201, {"message": "Reto creado con éxito", "id": item["id"]})
 

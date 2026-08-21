@@ -34,7 +34,7 @@ lambdas/
 
 - AWS CLI configurado con credenciales
 - SAM CLI instalado (`pip install aws-sam-cli`)
-- Python 3.14+ local
+- Python 3.13+ local
 - Docker (para SAM local testing)
 
 ---
@@ -249,7 +249,7 @@ def verify_token(event):
     try:
         payload = jwt.decode(token, 'SECRET_KEY', algorithms=['HS256'])
         return payload['user_id']
-    except:
+    except (KeyError, ValueError, jwt.InvalidTokenError):
         return None
 ```
 

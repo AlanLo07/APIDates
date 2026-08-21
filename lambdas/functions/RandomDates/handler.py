@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, DecimalEncoder
+from common.utils import build_response, DecimalEncoder, log_event, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -129,24 +129,8 @@ def _fetch_planes(tipo: str | None, solo_nuevos: bool) -> list:
             expr = expr & fe
         params["FilterExpression"] = expr
 
-    # Maneja paginación automáticamente (por si hay muchos planes)
-    items = []
-    page_count = 0
-    while True:
-        page_count += 1
-        result = planes_table.scan(**params)
-        items.extend(result.get("Items", []))
-        last_key = result.get("LastEvaluatedKey")
-        if not last_key:
-            break
-        params["ExclusiveStartKey"] = last_key
-
-    logger.info(json.dumps({
-        "level": "🔵",
-        "message": "Scan de planes completado",
-        "pages": page_count,
-        "count": len(items),
-    }, ensure_ascii=False))
+    items = scan_all(planes_table, **params)
+    log_event(logger, "🔵", "Scan de planes completado", count=len(items))
     return items
 
 

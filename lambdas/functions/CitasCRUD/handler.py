@@ -25,7 +25,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, get_path_param, parse_body
+from common.utils import build_response, get_path_param, parse_body, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -314,24 +314,6 @@ def normalize_cita(data: dict) -> dict:
     return base
 
 
-# ─── Paginación en scan ───────────────────────────────────────────────────────
-
-def scan_all(filter_expression=None) -> list:
-    """Recorre todas las páginas de DynamoDB para evitar el límite de 1 MB."""
-    kwargs: dict = {}
-    if filter_expression is not None:
-        kwargs['FilterExpression'] = filter_expression
-
-    items: list = []
-    while True:
-        response = table.scan(**kwargs)
-        items.extend(response.get('Items', []))
-        if not (last_key := response.get('LastEvaluatedKey')):
-            break
-        kwargs['ExclusiveStartKey'] = last_key
-    return items
-
-
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def current_week_key() -> str:
@@ -356,7 +338,7 @@ def get_all_items(event_type: str | None = None):
         if (event_type and event_type in VALID_TYPES)
         else None
     )
-    items = scan_all(filter_expr)
+    items = scan_all(table, filter_expr)
 
     def sort_key(item: dict) -> str:
         # cancion_semana se ordena cronológicamente por weekKey (string ISO)
@@ -470,7 +452,7 @@ def get_canciones_semana():
     GET /citas/cancion-semana
     Lista todas las canciones ordenadas por weekKey descendente (más reciente primero).
     """
-    items = scan_all(Attr('type').eq('cancion_semana'))
+    items = scan_all(table, Attr('type').eq('cancion_semana'))
     items.sort(key=lambda x: x.get('weekKey', ''), reverse=True)
     return build_response(200, {'items': items, 'count': len(items)})
 
@@ -481,7 +463,7 @@ def get_cancion_semana_actual():
     Devuelve la canción registrada para la semana ISO actual.
     """
     week_key = current_week_key()
-    items = scan_all(
+    items = scan_all(table,
         Attr('type').eq('cancion_semana') & Attr('weekKey').eq(week_key)
     )
     if not items:
@@ -519,6 +501,7 @@ def create_cancion_semana(data: dict):
     # Unicidad por semana — evita duplicados
     week_key = data['weekKey']
     existing = scan_all(
+        table,
         Attr('type').eq('cancion_semana') & Attr('weekKey').eq(week_key)
     )
     if existing:

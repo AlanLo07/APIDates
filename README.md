@@ -17,7 +17,7 @@ API REST completamente serverless en AWS para gestionar planes, citas, finanzas,
 
 | Componente | Tecnología |
 |-----------|-----------|
-| **Compute** | AWS Lambda (Python 3.14) |
+| **Compute** | AWS Lambda (Python 3.13) |
 | **API** | API Gateway HTTP API + CORS |
 | **Database** | DynamoDB (NoSQL) |
 | **Storage** | S3 (Imágenes y audios) |
@@ -284,7 +284,7 @@ aws configure
 # SAM CLI
 pip install aws-sam-cli
 
-# Python 3.14+ local
+# Python 3.13+ local
 python --version
 ```
 
@@ -342,7 +342,7 @@ Cliente
   ↓
 API Gateway HTTP (CORS habilitado)
   ↓
-Lambda Functions (Python 3.14)
+Lambda Functions (Python 3.13)
   ├─ ChallengesCRUD
   ├─ DiceCRUD
   ├─ FinancesCRUD

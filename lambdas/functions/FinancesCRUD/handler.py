@@ -31,15 +31,15 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
-from pathlib import Path
+from decimal import Decimal, InvalidOperation
+from typing import cast
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, get_path_param, parse_body  # type: ignore
+from common.utils import build_response, get_path_param, log_event, parse_body, query_all  # type: ignore
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -139,6 +139,11 @@ def get_iso_timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
+def to_decimal(value):
+    """Convierte montos a Decimal sin perder precisión monetaria."""
+    return Decimal(str(value))
+
+
 def validate_expense(expense_data):
     """🔵 Valida estructura de gasto."""
     errors = []
@@ -148,10 +153,10 @@ def validate_expense(expense_data):
 
     # Validar monto
     try:
-        amount = float(expense_data.get("amount", 0))
+        amount = to_decimal(expense_data.get("amount", 0))
         if amount <= 0:
             errors.append("El monto debe ser mayor a 0")
-    except (ValueError, TypeError):
+    except (InvalidOperation, ValueError, TypeError):
         errors.append("Monto inválido")
 
     # Validar categoría
@@ -177,10 +182,10 @@ def validate_budget(budget_data):
         errors.append("amount es requerido")
 
     try:
-        amount = float(budget_data.get("amount", 0))
+        amount = to_decimal(budget_data.get("amount", 0))
         if amount < 0:
             errors.append("El presupuesto no puede ser negativo")
-    except (ValueError, TypeError):
+    except (InvalidOperation, ValueError, TypeError):
         errors.append("Presupuesto debe ser un número válido")
 
     return errors
@@ -191,40 +196,41 @@ def get_month_year_from_date(date_str):
     try:
         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
         return dt.strftime("%Y-%m")
-    except:
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
 def calculate_monthly_stats(month_year):
     """🔵 Calcula estadísticas mensuales automáticamente (pareja única)."""
     try:
-        response = table.query(
+        items = query_all(table,
             KeyConditionExpression=Key("PK").eq(PAREJA_PK)
             & Key("SK").begins_with("GASTO#"),
             ProjectionExpression="SK,amount,category,#date",
             ExpressionAttributeNames={"#date": "date"},
         )
-
-        items = response.get("Items", [])
         month_expenses = [
             item
             for item in items
             if get_month_year_from_date(item.get("date", "")) == month_year
         ]
 
-        total_spent = sum(float(item["amount"]) for item in month_expenses)
+        total_spent = sum(
+            (to_decimal(item["amount"]) for item in month_expenses),
+            Decimal("0"),
+        )
 
         # Agrupar por categoría
         by_category = {}
         for item in month_expenses:
             cat = item.get("category", "others")
-            by_category[cat] = by_category.get(cat, 0) + float(item["amount"])
+            by_category[cat] = by_category.get(cat, Decimal("0")) + to_decimal(item["amount"])
 
         # Obtener presupuesto
         budget_response = table.get_item(
             Key={"PK": PAREJA_PK, "SK": f"PRESUPUESTO#{month_year}"}
         )
-        budget_amount = float(
+        budget_amount = to_decimal(
             budget_response.get("Item", {}).get("amount", 0)
         )
 
@@ -232,16 +238,16 @@ def calculate_monthly_stats(month_year):
 
         return {
             "monthYear": month_year,
-            "totalSpent": Decimal(str(total_spent)),
-            "budgetAmount": Decimal(str(budget_amount)),
-            "byCategory": {k: Decimal(str(v)) for k, v in by_category.items()},
+            "totalSpent": total_spent,
+            "budgetAmount": budget_amount,
+            "byCategory": by_category,
             "expenseCount": len(month_expenses),
             "overBudget": over_budget,
-            "difference": Decimal(str(budget_amount - total_spent)) if budget_amount > 0 else Decimal("0"),
+            "difference": budget_amount - total_spent if budget_amount > 0 else Decimal("0"),
             "calculatedAt": get_iso_timestamp(),
         }
     except ClientError as e:
-        logger.error(f"🔴 Error calculando estadísticas: {e}")
+        log_event(logger, "🔴", "Error calculando estadísticas", error=str(e))
         return None
 
 
@@ -272,14 +278,14 @@ def init_couple(user1_name, user2_name, user1_email, user2_email):
             }
         )
 
-        logger.info(f"🟢 Pareja inicializada")
+        log_event(logger, "🟢", "Pareja inicializada")
         return {
             "user1": {"name": user1_name, "email": user1_email},
             "user2": {"name": user2_name, "email": user2_email},
             "createdAt": now,
         }
     except ClientError as e:
-        logger.error(f"🔴 Error inicializando pareja: {e}")
+        log_event(logger, "🔴", "Error inicializando pareja", error=str(e))
         raise
 
 
@@ -291,7 +297,7 @@ def get_couple():
             return None
         return response["Item"]
     except ClientError as e:
-        logger.error(f"🔴 Error obteniendo pareja: {e}")
+        log_event(logger, "🔴", "Error obteniendo pareja", error=str(e))
         return None
 
 
@@ -339,23 +345,21 @@ def create_expense(title, amount, date, category, note=None, created_by=None):
                 }
             )
 
-        logger.info(f"🟢 Gasto creado: {gasto_id} en {month_year}")
+        log_event(logger, "🟢", "Gasto creado", gasto_id=gasto_id, month_year=month_year)
         return expense_item, 201
     except ClientError as e:
-        logger.error(f"🔴 Error creando gasto: {e}")
+        log_event(logger, "🔴", "Error creando gasto", error=str(e))
         return {"error": str(e)}, 500
 
 
 def list_expenses(month_year=None, category=None):
     """🟢 Lista gastos con filtros opcionales."""
     try:
-        response = table.query(
+        expenses = query_all(table,
             KeyConditionExpression=Key("PK").eq(PAREJA_PK)
             & Key("SK").begins_with("GASTO#"),
             ScanIndexForward=False,  # Más recientes primero
         )
-
-        expenses = response.get("Items", [])
 
         # Filtrar por mes si se especifica
         if month_year:
@@ -367,7 +371,7 @@ def list_expenses(month_year=None, category=None):
 
         return expenses, 200
     except ClientError as e:
-        logger.error(f"🔴 Error listando gastos: {e}")
+        log_event(logger, "🔴", "Error listando gastos", error=str(e))
         return {"error": str(e)}, 500
 
 
@@ -381,7 +385,7 @@ def get_expense(gasto_id):
             return None, 404
         return response["Item"], 200
     except ClientError as e:
-        logger.error(f"🔴 Error obteniendo gasto: {e}")
+        log_event(logger, "🔴", "Error obteniendo gasto", error=str(e))
         return {"error": str(e)}, 500
 
 
@@ -446,10 +450,10 @@ def update_expense(gasto_id, update_data):
             if month_year:
                 calculate_monthly_stats(month_year)
 
-        logger.info(f"🟢 Gasto actualizado: {gasto_id}")
+        log_event(logger, "🟢", "Gasto actualizado", gasto_id=gasto_id)
         return response["Attributes"], 200
     except ClientError as e:
-        logger.error(f"🔴 Error actualizando gasto: {e}")
+        log_event(logger, "🔴", "Error actualizando gasto", error=str(e))
         return {"error": str(e)}, 500
 
 
@@ -469,10 +473,10 @@ def delete_expense(gasto_id):
         if month_year:
             calculate_monthly_stats(month_year)
 
-        logger.info(f"🟢 Gasto eliminado: {gasto_id}")
+        log_event(logger, "🟢", "Gasto eliminado", gasto_id=gasto_id)
         return {"message": "Gasto eliminado exitosamente"}, 200
     except ClientError as e:
-        logger.error(f"🔴 Error eliminando gasto: {e}")
+        log_event(logger, "🔴", "Error eliminando gasto", error=str(e))
         return {"error": str(e)}, 500
 
 
@@ -511,14 +515,14 @@ def set_budget(month_year, amount, notes=None):
                 }
             )
 
-        logger.info(f"🟢 Presupuesto establecido: {month_year} = {amount}")
+        log_event(logger, "🟢", "Presupuesto establecido", month_year=month_year)
         return {
             "monthYear": month_year,
             "amount": Decimal(str(amount)),
             "updatedAt": now,
         }, 200
     except ClientError as e:
-        logger.error(f"🔴 Error estableciendo presupuesto: {e}")
+        log_event(logger, "🔴", "Error estableciendo presupuesto", error=str(e))
         return {"error": str(e)}, 500
 
 
@@ -532,7 +536,7 @@ def get_budget(month_year):
             return None, 404
         return response["Item"], 200
     except ClientError as e:
-        logger.error(f"🔴 Error obteniendo presupuesto: {e}")
+        log_event(logger, "🔴", "Error obteniendo presupuesto", error=str(e))
         return {"error": str(e)}, 500
 
 
@@ -550,23 +554,22 @@ def get_monthly_history(month_year):
             return calculate_monthly_stats(month_year), 200
         return response["Item"], 200
     except ClientError as e:
-        logger.error(f"🔴 Error obteniendo histórico: {e}")
+        log_event(logger, "🔴", "Error obteniendo histórico", error=str(e))
         return {"error": str(e)}, 500
 
 
 def get_all_history(limit=12):
     """🟢 Obtiene histórico de últimos N meses."""
     try:
-        response = table.query(
+        items = query_all(table,
             KeyConditionExpression=Key("PK").eq(PAREJA_PK)
             & Key("SK").begins_with("HISTORICO#"),
             ScanIndexForward=False,  # Más recientes primero
             Limit=limit,
         )
-        items = response.get("Items", [])
         return items, 200
     except ClientError as e:
-        logger.error(f"🔴 Error obteniendo histórico: {e}")
+        log_event(logger, "🔴", "Error obteniendo histórico", error=str(e))
         return {"error": str(e)}, 500
 
 
@@ -582,9 +585,13 @@ def get_summary():
 
         # Obtener todos los gastos
         expenses, _ = list_expenses()
+        expenses = cast(list[dict], expenses)
 
         # Gasto total
-        total_spent = sum(float(e["amount"]) for e in expenses) # type: ignore
+        total_spent = sum(
+            (to_decimal(expense["amount"]) for expense in expenses),
+            Decimal("0"),
+        )
 
         # Gasto de esta semana (últimos 7 días)
         from datetime import timedelta
@@ -592,9 +599,9 @@ def get_summary():
         now = datetime.now(timezone.utc)
         week_ago = (now - timedelta(days=7)).isoformat()
         weekly_spent = sum(
-            float(e["amount"]) # type: ignore
-            for e in expenses
-            if e.get("date", "") >= week_ago # type: ignore
+            (to_decimal(expense["amount"]) for expense in expenses
+             if expense.get("date", "") >= week_ago),
+            Decimal("0"),
         )
 
         # Meses disponibles
@@ -603,20 +610,20 @@ def get_summary():
         # Estadísticas por categoría
         by_category = {}
         for expense in expenses:
-            cat = expense.get("category", "others") # type: ignore
-            by_category[cat] = by_category.get(cat, 0) + float(expense["amount"]) # type: ignore
+            cat = expense.get("category", "others")
+            by_category[cat] = by_category.get(cat, Decimal("0")) + to_decimal(expense["amount"])
 
         return {
             "couple": couple,
-            "totalSpent": Decimal(str(total_spent)),
-            "weeklySpent": Decimal(str(weekly_spent)),
+            "totalSpent": total_spent,
+            "weeklySpent": weekly_spent,
             "expenseCount": len(expenses),
             "availableMonths": months,
-            "byCategory": {k: Decimal(str(v)) for k, v in by_category.items()},
+            "byCategory": by_category,
             "expenseCategories": EXPENSE_CATEGORIES,
         }, 200
     except ClientError as e:
-        logger.error(f"🔴 Error obteniendo resumen: {e}")
+        log_event(logger, "🔴", "Error obteniendo resumen", error=str(e))
         return {"error": str(e)}, 500
 
 
