@@ -50,6 +50,7 @@ Globals:
         KAMASUTRA_TABLE_NAME: !Ref KamasutraTable
         BODAS_TABLE_NAME: !Ref BodasTable
         FINANCES_TABLE_NAME: !Ref FinancesTable
+        CHECKLISTS_TABLE_NAME: !Ref ChecklistsTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
       - !Ref CommonLayer
@@ -800,6 +801,97 @@ Resources:
             Method: GET
             Path: /finances/historico
 
+  # ── Lambda: Checklists CRUD ────────────────────────────────────────────────
+  ChecklistsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: checklists-crud
+      CodeUri: functions/ChecklistsCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de checklists (supermercado, viaje, deseos y personalizados) con grupos e items"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChecklistsTable
+      Events:
+        ListChecklists:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /checklists
+        CreateChecklist:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /checklists
+        SeedDefaultChecklists:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /checklists/seed-defaults
+        GetChecklist:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /checklists/{checklistId}
+        UpdateChecklist:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /checklists/{checklistId}
+        DeleteChecklist:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /checklists/{checklistId}
+        ResetChecklist:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PATCH
+            Path: /checklists/{checklistId}/reset
+        ListCollection:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /checklists/{checklistId}/{collection}
+        CreateCollectionItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /checklists/{checklistId}/{collection}
+        GetCollectionItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /checklists/{checklistId}/{collection}/{itemId}
+        UpdateCollectionItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /checklists/{checklistId}/{collection}/{itemId}
+        DeleteCollectionItem:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /checklists/{checklistId}/{collection}/{itemId}
+        UpdateItemComprado:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PATCH
+            Path: /checklists/{checklistId}/items/{itemId}/comprado
+
   # ── Lambda: Spotify API (catalogo y recomendaciones por busqueda) ─────────
   SpotifyFunction:
     Type: AWS::Serverless::Function
@@ -943,6 +1035,43 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  # ── DynamoDB: Tabla Checklists (agregado completo) ───────────────────────
+  ChecklistsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: ChecklistsTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: entityType
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: entityType-index
+          KeySchema:
+            - AttributeName: entityType
+              KeyType: HASH
+            - AttributeName: sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ApiUrl:
@@ -998,3 +1127,11 @@ Outputs:
   SpotifyEndpoint:
     Description: "Endpoint base de Spotify"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/spotify"
+
+  ChecklistsTableName:
+    Description: "Nombre de la tabla Checklists"
+    Value: !Ref ChecklistsTable
+
+  ChecklistsEndpoint:
+    Description: "Endpoint base de Checklists"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/checklists"
