@@ -57,19 +57,27 @@ Gestión completa de bodas (invitados, tareas, gastos, proveedores, etc.).
 - **Colecciones:** invitados, tareas, gastos, canciones, proveedores, looks, hospedaje, menú, álbum
 - **Endpoints:** `/bodas/*`
 
-### 5️⃣ **Planes & Citas** — Actividades
+### 5️⃣ **Checklists** — Compras, Viajes y Listas
+Tableros de supermercado, viaje, deseos/compras y listas personalizadas.
+- **Tabla:** `ChecklistsTable`
+- **Función:** `checklists-crud`
+- **Colecciones:** grupos, items
+- **Características:** prioridades, precio opcional, estado comprado y reinicio masivo
+- **Endpoints:** `/checklists/*`
+
+### 6️⃣ **Planes & Citas** — Actividades
 Gestión de planes turísticos y citas agendadas.
 - **Tablas:** `Planes`, `Citas`, `LovePhrasesTable`
 - **Funciones:** `planes-crud`, `citas-crud`, `love-phrases-crud`
 - **Endpoints:** `/planes/*`, `/citas/*`, `/love-phrases/*`
 
-### 6️⃣ **Imágenes & Audios** — Storage
+### 7️⃣ **Imágenes & Audios** — Storage
 Gestión de subida de imágenes y audios con URLs prefirmadas.
 - **Storage:** S3 Bucket
 - **Función:** `images-manager`
 - **Endpoints:** `/images/upload-url`, `/audio/upload-url`
 
-### 7️⃣ **Spotify** — Búsqueda y Recomendaciones
+### 8️⃣ **Spotify** — Búsqueda y Recomendaciones
 Consulta catálogo público de Spotify para búsquedas y recomendaciones por semilla.
 - **Función:** `spotify-api`
 - **Autenticación backend:** Client Credentials (sin login del usuario final)
@@ -95,6 +103,8 @@ APIDates/
 │   │   │   ├── handler.py
 │   │   │   └── requirements.txt
 │   │   ├── BodasCRUD/
+│   │   │   └── handler.py
+│   │   ├── ChecklistsCRUD/
 │   │   │   └── handler.py
 │   │   ├── DatesCRUD/          # Planes
 │   │   │   └── handler.py
@@ -191,6 +201,36 @@ APIDates/
 }
 ```
 
+### Checklist
+```json
+{
+  "id": "uuid",
+  "titulo": "Supermercado",
+  "kind": "supermercado|viaje|deseos|personalizado",
+  "emoji": "...",
+  "colorValue": 4283215696,
+  "usaGrupos": true,
+  "createdAt": "ISO 8601",
+  "updatedAt": "ISO 8601"
+}
+```
+
+### Checklist Item
+```json
+{
+  "id": "uuid",
+  "checklistId": "uuid",
+  "nombre": "Manzanas",
+  "groupId": "uuid|null",
+  "prioridad": "alta|media|baja",
+  "precio": 12500.0,
+  "comprado": false,
+  "nota": "opcional",
+  "createdAt": "ISO 8601",
+  "updatedAt": "ISO 8601"
+}
+```
+
 ---
 
 ## 📡 Endpoints Rápida Referencia
@@ -250,6 +290,22 @@ APIDates/
 | DELETE | `/bodas/{bodaId}/{collection}/{itemId}` | Eliminar item |
 | PATCH | `/bodas/{bodaId}/invitados/{id}/rsvp` | Confirmar asistencia |
 | POST | `/bodas/{bodaId}/album/upload-url` | URL para fotos |
+
+### Checklists
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/checklists` | Listar tableros |
+| POST | `/checklists` | Crear tablero |
+| POST | `/checklists/seed-defaults` | Crear/verificar listas principales |
+| GET | `/checklists/{checklistId}` | Tablero completo, grupos, items y resumen |
+| PUT | `/checklists/{checklistId}` | Actualizar tablero |
+| DELETE | `/checklists/{checklistId}` | Eliminar tablero y contenido |
+| PATCH | `/checklists/{checklistId}/reset` | Marcar todos los items como pendientes |
+| GET/POST | `/checklists/{checklistId}/grupos` | Listar o crear grupos |
+| GET/PUT/DELETE | `/checklists/{checklistId}/grupos/{itemId}` | Gestionar grupo |
+| GET/POST | `/checklists/{checklistId}/items` | Listar o crear items |
+| GET/PUT/DELETE | `/checklists/{checklistId}/items/{itemId}` | Gestionar item |
+| PATCH | `/checklists/{checklistId}/items/{itemId}/comprado` | Cambiar estado comprado |
 
 ### Spotify
 | Método | Ruta | Descripción |
@@ -347,6 +403,7 @@ Lambda Functions (Python 3.13)
   ├─ DiceCRUD
   ├─ FinancesCRUD
   ├─ BodasCRUD
+  ├─ ChecklistsCRUD
   ├─ DatesCRUD
   ├─ CitasCRUD
   ├─ PhrasesCRUD
@@ -376,6 +433,7 @@ Database Layer
 
 - **Finances:** Ver [FINANCES_CRUD_DOCUMENTATION.md](FINANCES_CRUD_DOCUMENTATION.md)
 - **Bodas:** Ver [BODAS_CRUD_DOCUMENTATION.md](BODAS_CRUD_DOCUMENTATION.md)
+- **Checklists:** Ver [CHECKLISTS_CRUD_DOCUMENTATION.md](CHECKLISTS_CRUD_DOCUMENTATION.md)
 - **Diagramas:** Ver [ARCHITECTURE.mmd](ARCHITECTURE.mmd), [FLOW.mmd](FLOW.mmd), [SEQUENCE.mmd](SEQUENCE.mmd)
 
 ---
@@ -448,5 +506,5 @@ Proyecto personal de parejas. Para contribuciones o mejoras, contactar al owner.
 
 ---
 
-**Última actualización:** 2026-07-28  
+**Última actualización:** 2026-08-25  
 **Versión:** 1.0 - MVP Completo
