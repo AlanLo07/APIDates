@@ -28,6 +28,20 @@ Parameters:
     Type: String
     Default: CO
     Description: "Market default ISO 3166-1 alpha-2 para Spotify"
+  CognitoCallbackUrl:
+    Type: String
+    Default: "http://localhost:5173/callback"
+    Description: "URL de redirección tras login (Hosted UI). Ajustar en prod."
+  CognitoLogoutUrl:
+    Type: String
+    Default: "http://localhost:5173/"
+    Description: "URL de redirección tras logout (Hosted UI). Ajustar en prod."
+  RefreshTokenValidityDays:
+    Type: Number
+    Default: "3650"
+    MinValue: "1"
+    MaxValue: "3650"
+    Description: "Días que dura el refreshToken antes de forzar un nuevo login"
   # KamasutraTableName:
   #   Type: String
   #   Default: KamasutraTable
@@ -131,6 +145,77 @@ Resources:
       RetentionPolicy: Delete
 
   # ── API Gateway HTTP API ───────────────────────────────────────────────────
+# ── Cognito: User Pool (directorio de usuarios) ─────────────────────────────
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+
+  # ── Cognito: App Client (usado por el front / lambdas de auth) ─────────────
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AWS::StackName}-web-client"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 60
+      IdTokenValidity: 60
+      RefreshTokenValidity: !Ref RefreshTokenValidityDays
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+      SupportedIdentityProviders:
+        - COGNITO
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !Ref CognitoCallbackUrl
+      LogoutURLs:
+        - !Ref CognitoLogoutUrl
+
+  # ── Cognito: Dominio para Hosted UI (login/registro alojado por AWS) ───────
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${AWS::StackName}-auth-${AWS::AccountId}"
+      UserPoolId: !Ref CognitoUserPool
+
   CitasApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -147,6 +232,113 @@ Resources:
         AllowHeaders:
           - Content-Type
           - X-Api-Key
+          - Authorization
+      Auth:
+        Authorizers:
+          CognitoJwtAuthorizer:
+            JwtConfiguration:
+              issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}"
+              audience:
+                - !Ref CognitoUserPoolClient
+            IdentitySource: "$request.header.Authorization"
+        DefaultAuthorizer: CognitoJwtAuthorizer
+        # Todas las rutas quedan protegidas por defecto. Las rutas de pre-login
+        # (signup/confirm/login/refresh/forgot-password) se abren explícitamente
+        # con Auth: { Authorizer: NONE } en su propio evento HttpApi.
+
+  # ── Lambda: Auth (signup/login/confirm/refresh/forgot-password) ───────────
+  AuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: auth-crud
+      CodeUri: functions/AuthCRUD/
+      Handler: handler.lambda_handler
+      Description: "Autenticación de usuarios contra Cognito User Pool"
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_CLIENT_ID: !Ref CognitoUserPoolClient
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:SignUp
+                - cognito-idp:ConfirmSignUp
+                - cognito-idp:ResendConfirmationCode
+                - cognito-idp:InitiateAuth
+                - cognito-idp:ForgotPassword
+                - cognito-idp:ConfirmForgotPassword
+                - cognito-idp:GlobalSignOut
+              Resource: !GetAtt CognitoUserPool.Arn
+      Events:
+        SignUp:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/signup
+            Auth:
+              Authorizer: NONE
+        Confirm:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/confirm
+            Auth:
+              Authorizer: NONE
+        ResendCode:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/resend-code
+            Auth:
+              Authorizer: NONE
+        Login:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/login
+            Auth:
+              Authorizer: NONE
+        Refresh:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/refresh
+            Auth:
+              Authorizer: NONE
+        ForgotPassword:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/forgot-password
+            Auth:
+              Authorizer: NONE
+        ConfirmForgotPassword:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/confirm-forgot-password
+            Auth:
+              Authorizer: NONE
+        Logout:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /auth/logout
+        Me:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /auth/me
 
   # ── Lambda: Planes CRUD ────────────────────────────────────────────────────
   PlanesFunction:
@@ -1079,6 +1271,30 @@ Outputs:
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com"
     Export:
       Name: !Sub "CitasApiUrl"
+
+  CognitoUserPoolId:
+    Description: "ID del User Pool de Cognito"
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub "${AWS::StackName}-CognitoUserPoolId"
+
+  CognitoUserPoolClientId:
+    Description: "ID del App Client de Cognito (usar en el front)"
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub "${AWS::StackName}-CognitoUserPoolClientId"
+
+  CognitoHostedUiDomain:
+    Description: "Dominio de la Hosted UI de Cognito para login/registro"
+    Value: !Sub "https://${CognitoUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+
+  CognitoIssuerUrl:
+    Description: "Issuer URL usado para validar JWTs"
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}"
+
+  AuthEndpoint:
+    Description: "Endpoint base de autenticación"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/auth"
 
   LovePhrasesTableName:
     Description: "Nombre de la tabla LovePhrases"
