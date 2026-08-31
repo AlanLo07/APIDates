@@ -527,6 +527,7 @@ def _create_item_item(checklist_id: str, data: dict) -> dict:
     prioridad = data.get("prioridad") or "media"
     if prioridad not in VALID_PRIORITIES:
         raise ValueError(f"'prioridad' inválida. Opciones: {', '.join(sorted(VALID_PRIORITIES))}")
+    prioridad_orden = _to_positive_int(data.get("prioridadOrden", 999), "prioridadOrden")
 
     item_id = data.get("id") or str(uuid.uuid4())
     timestamp = _utc_now()
@@ -540,6 +541,7 @@ def _create_item_item(checklist_id: str, data: dict) -> dict:
         "nombre": _clean_str(data.get("nombre")),
         "groupId": _nullable_str(data.get("groupId")),
         "prioridad": prioridad,
+        "prioridadOrden": prioridad_orden,
         "precio": _to_float(data["precio"], "precio") if data.get("precio") is not None else None,
         "emoji": _nullable_str(data.get("emoji")),
         "comprado": bool(data.get("comprado", False)),
@@ -561,6 +563,8 @@ def _normalize_payload_for_dynamo(collection: str, data: dict) -> dict:
         if "orden" in payload:
             payload["orden"] = _to_int(payload["orden"], "orden")
     elif collection == "items":
+        if "prioridadOrden" in payload:
+            payload["prioridadOrden"] = _to_positive_int(payload["prioridadOrden"], "prioridadOrden")
         if "precio" in payload:
             payload["precio"] = _to_float(payload["precio"], "precio") if payload["precio"] is not None else None
         if "groupId" in payload:
@@ -586,6 +590,8 @@ def _validate_collection_payload(collection: str, data: dict, is_update: bool):
             raise ValueError("El campo 'nombre' no puede estar vacío")
         if "prioridad" in data and data["prioridad"] not in VALID_PRIORITIES:
             raise ValueError(f"'prioridad' inválida. Opciones: {', '.join(sorted(VALID_PRIORITIES))}")
+        if "prioridadOrden" in data:
+            _to_positive_int(data["prioridadOrden"], "prioridadOrden")
         if "comprado" in data and not isinstance(data.get("comprado"), bool):
             raise ValueError("El campo 'comprado' debe ser booleano")
 
@@ -678,7 +684,11 @@ def _sort_items(collection: str, items: list[dict]) -> list[dict]:
     if collection == "items":
         return sorted(
             items,
-            key=lambda item: (bool(item.get("comprado")), str(item.get("nombre", "")).lower()),
+            key=lambda item: (
+                bool(item.get("comprado")),
+                _as_number(item.get("prioridadOrden", Decimal("Infinity"))),
+                str(item.get("nombre", "")).lower(),
+            ),
         )
     return items
 
@@ -718,6 +728,17 @@ def _to_int(value, field_name: str) -> Decimal:
         return Decimal(str(value)).to_integral_value()
     except (TypeError, ValueError, InvalidOperation) as exc:
         raise ValueError(f"El campo '{field_name}' debe ser numérico") from exc
+
+
+def _to_positive_int(value, field_name: str) -> Decimal:
+    try:
+        number = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation) as exc:
+        raise ValueError(f"El campo '{field_name}' debe ser un entero mayor o igual a 1") from exc
+
+    if not number.is_finite() or number < 1 or number != number.to_integral_value():
+        raise ValueError(f"El campo '{field_name}' debe ser un entero mayor o igual a 1")
+    return number
 
 
 def _to_float(value, field_name: str) -> Decimal:

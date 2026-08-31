@@ -80,6 +80,7 @@ Despues, invoca `GET /checklists` para pintar los tableros. Para abrir un tabler
   "nombre": "Manzanas",
   "groupId": "uuid-del-grupo",
   "prioridad": "alta",
+  "prioridadOrden": 1,
   "precio": 12500.0,
   "emoji": "...",
   "comprado": false,
@@ -91,6 +92,7 @@ Despues, invoca `GET /checklists` para pintar los tableros. Para abrir un tabler
 
 - `groupId`, `precio`, `emoji` y `nota` son opcionales y pueden ser `null`.
 - `prioridad`: `alta`, `media` o `baja`. Si se omite, toma `media`.
+- `prioridadOrden`: entero mayor o igual a `1`; `1` es la mayor prioridad. Si se omite, toma `999`.
 - `comprado` es booleano y, si se omite al crear, toma `false`.
 - Un item sin `groupId` se presenta como `Sin categoria` en el modelo Flutter.
 
@@ -110,7 +112,7 @@ Despues, invoca `GET /checklists` para pintar los tableros. Para abrir un tabler
 | GET | `/checklists/{checklistId}/grupos/{itemId}` | Obtiene un grupo |
 | PUT | `/checklists/{checklistId}/grupos/{itemId}` | Actualiza un grupo |
 | DELETE | `/checklists/{checklistId}/grupos/{itemId}` | Borra un grupo y desasigna sus items |
-| GET | `/checklists/{checklistId}/items` | Lista items pendientes antes que comprados |
+| GET | `/checklists/{checklistId}/items` | Lista items pendientes antes que comprados y por prioridad numérica |
 | POST | `/checklists/{checklistId}/items` | Crea un item |
 | GET | `/checklists/{checklistId}/items/{itemId}` | Obtiene un item |
 | PUT | `/checklists/{checklistId}/items/{itemId}` | Actualiza un item |
@@ -217,6 +219,7 @@ Reglas al crear:
       "nombre": "Manzanas",
       "groupId": "uuid-frutas",
       "prioridad": "alta",
+      "prioridadOrden": 1,
       "precio": 12500.0,
       "comprado": false
     }
@@ -231,7 +234,7 @@ Reglas al crear:
 }
 ```
 
-`items` se ordena con pendientes primero y comprados despues; dentro de cada grupo el modelo Dart puede continuar ordenando por prioridad y nombre con `itemsByGroup`.
+`items` se ordena con pendientes primero, `prioridadOrden` ascendente y nombre. El valor `1` representa la mayor prioridad. Los items creados antes de este campo se ubican después de los que tienen una prioridad explícita.
 
 ### Crear y actualizar un grupo
 
@@ -267,6 +270,7 @@ Si se elimina un grupo, los items que lo referencian no se eliminan: se actualiz
   "nombre": "Jabones",
   "groupId": "uuid-grupo-aseo",
   "prioridad": "media",
+  "prioridadOrden": 2,
   "precio": 9800.0,
   "emoji": "...",
   "comprado": false,
@@ -290,6 +294,7 @@ Respuesta `201`:
 {
   "precio": 10500.0,
   "prioridad": "alta",
+  "prioridadOrden": 1,
   "nota": "Marca preferida"
 }
 ```
