@@ -40,7 +40,7 @@ table = dynamodb.Table(TABLE_NAME) # type: ignore
 VALID_TYPES = {'recuerdo', 'carta', 'evento', 'cancion_semana'}
 
 REQUIRED_FIELDS: dict[str, list[str]] = {
-    'recuerdo':       ['title', 'description', 'date', 'imagePath'],
+    'recuerdo':       ['title', 'description', 'date'],
     'carta':          ['title', 'description', 'date'],
     'evento':         ['title', 'description', 'date'],
     'cancion_semana': ['title', 'artista', 'link', 'setBy', 'weekKey'],  # se valida que date sea una fecha, aunque no se use directamente
@@ -79,6 +79,31 @@ def to_decimal(value, field_name: str) -> Decimal:
         return Decimal(str(value))
     except (TypeError, ValueError, InvalidOperation) as exc:
         raise ValueError(f"El campo '{field_name}' debe ser numérico") from exc
+
+
+def normalize_image_paths(value, legacy_value=None) -> list[str]:
+    if value is None:
+        raw_paths = []
+    elif isinstance(value, list):
+        raw_paths = value
+    else:
+        raise ValueError("El campo 'imagePaths' debe ser una lista de links")
+
+    image_paths: list[str] = []
+    for index, path in enumerate(raw_paths):
+        if not isinstance(path, str):
+            raise ValueError(f"La imagen en la posición {index} debe ser texto")
+        if cleaned := path.strip():
+            image_paths.append(cleaned)
+
+    if image_paths or legacy_value is None:
+        return image_paths
+
+    if not isinstance(legacy_value, str):
+        raise ValueError("El campo 'imagePath' debe ser texto")
+
+    legacy_path = legacy_value.strip()
+    return [legacy_path] if legacy_path else []
 
 
 def normalize_event_documents(value) -> list[str]:
@@ -259,6 +284,14 @@ def validate_cita(data: dict) -> tuple[bool, str]:
         except ValueError:
             return False, f"Fecha inválida: '{data.get('date')}'. Formato esperado: dd-mm-yyyy"
 
+    if event_type == 'recuerdo':
+        try:
+            image_paths = normalize_image_paths(data.get('imagePaths'), data.get('imagePath'))
+        except ValueError as exc:
+            return False, str(exc)
+        if not image_paths:
+            return False, "Campos requeridos faltantes para 'recuerdo': imagePaths"
+
     if event_type == 'evento':
         return validate_event_shape(data)
 
@@ -297,7 +330,7 @@ def normalize_cita(data: dict) -> dict:
     }
 
     if event_type == 'recuerdo':
-        base['imagePath'] = data.get('imagePath', '').strip()
+        base['imagePaths'] = normalize_image_paths(data.get('imagePaths'), data.get('imagePath'))
     elif event_type == 'carta':
         base['abierta'] = bool(data.get('abierta', False))
         if audio_url := data.get('audioUrl', '').strip():
@@ -314,6 +347,19 @@ def normalize_cita(data: dict) -> dict:
     return base
 
 
+def serialize_cita(item: dict) -> dict:
+    response_item = dict(item)
+
+    if response_item.get('type') == 'recuerdo':
+        response_item['imagePaths'] = normalize_image_paths(
+            response_item.get('imagePaths'),
+            response_item.get('imagePath'),
+        )
+        response_item.pop('imagePath', None)
+
+    return response_item
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def current_week_key() -> str:
@@ -327,7 +373,7 @@ def current_week_key() -> str:
 def get_item(item_id: str):
     result = table.get_item(Key={'id': item_id})
     if 'Item' in result:
-        return build_response(200, result['Item'])
+        return build_response(200, serialize_cita(result['Item']))
     return build_response(404, {'message': f"Cita '{item_id}' no encontrada"})
 
 
@@ -350,7 +396,7 @@ def get_all_items(event_type: str | None = None):
             return ''
 
     items.sort(key=sort_key)
-    return build_response(200, items)
+    return build_response(200, [serialize_cita(item) for item in items])
 
 
 def create_item(data: dict):
