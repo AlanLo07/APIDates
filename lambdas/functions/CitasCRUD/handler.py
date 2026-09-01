@@ -330,7 +330,7 @@ def normalize_cita(data: dict) -> dict:
     }
 
     if event_type == 'recuerdo':
-        base['imagesPaths'] = normalize_image_paths(data.get('imagesPath'), data.get('imagePath'))
+        base['imagesPath'] = normalize_image_paths(data.get('imagesPath'), data.get('imagePath'))
     elif event_type == 'carta':
         base['abierta'] = bool(data.get('abierta', False))
         if audio_url := data.get('audioUrl', '').strip():
@@ -351,7 +351,7 @@ def serialize_cita(item: dict) -> dict:
     response_item = dict(item)
 
     if response_item.get('type') == 'recuerdo':
-        response_item['imagesPaths'] = normalize_image_paths(
+        response_item['imagesPath'] = normalize_image_paths(
             response_item.get('imagesPath'),
             response_item.get('imagePath'),
         )
