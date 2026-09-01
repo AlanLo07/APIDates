@@ -87,7 +87,7 @@ def normalize_image_paths(value, legacy_value=None) -> list[str]:
     elif isinstance(value, list):
         raw_paths = value
     else:
-        raise ValueError("El campo 'imagePaths' debe ser una lista de links")
+        raise ValueError("El campo 'imagesPath' debe ser una lista de links")
 
     image_paths: list[str] = []
     for index, path in enumerate(raw_paths):
@@ -286,11 +286,11 @@ def validate_cita(data: dict) -> tuple[bool, str]:
 
     if event_type == 'recuerdo':
         try:
-            image_paths = normalize_image_paths(data.get('imagePaths'), data.get('imagePath'))
+            image_paths = normalize_image_paths(data.get('imagesPath'), data.get('imagePath'))
         except ValueError as exc:
             return False, str(exc)
         if not image_paths:
-            return False, "Campos requeridos faltantes para 'recuerdo': imagePaths"
+            return False, "Campos requeridos faltantes para 'recuerdo': imagesPath"
 
     if event_type == 'evento':
         return validate_event_shape(data)
@@ -330,7 +330,7 @@ def normalize_cita(data: dict) -> dict:
     }
 
     if event_type == 'recuerdo':
-        base['imagePaths'] = normalize_image_paths(data.get('imagePaths'), data.get('imagePath'))
+        base['imagesPaths'] = normalize_image_paths(data.get('imagesPath'), data.get('imagePath'))
     elif event_type == 'carta':
         base['abierta'] = bool(data.get('abierta', False))
         if audio_url := data.get('audioUrl', '').strip():
@@ -351,8 +351,8 @@ def serialize_cita(item: dict) -> dict:
     response_item = dict(item)
 
     if response_item.get('type') == 'recuerdo':
-        response_item['imagePaths'] = normalize_image_paths(
-            response_item.get('imagePaths'),
+        response_item['imagesPaths'] = normalize_image_paths(
+            response_item.get('imagesPath'),
             response_item.get('imagePath'),
         )
         response_item.pop('imagePath', None)
