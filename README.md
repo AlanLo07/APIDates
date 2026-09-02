@@ -77,10 +77,11 @@ Gestión de subida de imágenes y audios con URLs prefirmadas.
 - **Función:** `images-manager`
 - **Endpoints:** `/images/upload-url`, `/audio/upload-url`
 
-### 8️⃣ **Spotify** — Búsqueda y Recomendaciones
-Consulta catálogo público de Spotify para búsquedas y recomendaciones por semilla.
+### 8️⃣ **Spotify** — Catálogo y Reproductor
+Consulta catálogo público de Spotify (search, tracks, artists, albums, playlists) y controla la reproducción del usuario (player).
 - **Función:** `spotify-api`
-- **Autenticación backend:** Client Credentials (sin login del usuario final)
+- **Autenticación catálogo:** Client Credentials (sin login del usuario final)
+- **Autenticación player:** Authorization Code (el usuario vincula su cuenta vía `/spotify/login`)
 - **Endpoints:** `/spotify/*`
 
 ---
@@ -311,22 +312,31 @@ APIDates/
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | GET | `/spotify/search?q={texto}&type=track&limit=10&market=CO` | Buscar tracks, artists, albums o playlists |
-| GET | `/spotify/recommendations?q={texto}&limit=20&market=CO&mood=romantico` | Recomendar tracks similares por búsqueda, mood y tuners opcionales |
-| GET | `/spotify/moods` | Listar moods disponibles con tuners sugeridos |
-| GET | `/spotify/genres?q=pop&limit=50` | Listar géneros disponibles para recomendaciones |
 | GET | `/spotify/tracks/{id}?market=CO` | Obtener detalle de track |
 | GET | `/spotify/artists/{id}` | Obtener detalle de artista |
 | GET | `/spotify/artists/{id}/top-tracks?market=CO&limit=10` | Obtener top tracks de un artista |
+| GET | `/spotify/artists/{id}/albums?market=CO&limit=20` | Listar álbumes/sencillos de un artista |
+| GET | `/spotify/albums/{id}?market=CO` | Obtener detalle de álbum |
+| GET | `/spotify/albums/{id}/tracks?market=CO&limit=20` | Listar tracks de un álbum |
+| GET | `/spotify/playlists/{id}?market=CO` | Obtener detalle de playlist |
+| GET | `/spotify/playlists/{id}/tracks?market=CO&limit=20` | Listar tracks de una playlist |
+| GET | `/spotify/login` | Devuelve `authUrl` para vincular la cuenta del usuario (requiere JWT) |
+| GET | `/spotify/callback` | Callback público de Spotify, guarda tokens del usuario |
+| GET | `/spotify/player?market=CO` | Estado actual de reproducción del usuario |
+| GET | `/spotify/player/currently-playing?market=CO` | Track que se está reproduciendo |
+| GET | `/spotify/player/devices` | Dispositivos disponibles del usuario |
+| PUT | `/spotify/player/play` | Reanudar/iniciar reproducción (`context_uri`, `uris`, `device_id` opcionales) |
+| PUT | `/spotify/player/pause` | Pausar reproducción |
+| PUT | `/spotify/player/volume?volume_percent=50` | Ajustar volumen |
+| POST | `/spotify/player/next` | Saltar a la siguiente pista |
+| POST | `/spotify/player/previous` | Volver a la pista anterior |
 
 **Notas:**
 - `type` permitido en búsqueda: `track`, `artist`, `album`, `playlist`.
 - `market` por defecto viene de `SpotifyMarket` en el deploy (ejemplo: `CO`).
-- `recommendations` usa fallback por artista/top-tracks cuando no encuentra track semilla.
-- Presets de `mood` disponibles: `romantico`, `fiesta`, `chill`, `focus`.
-- `GET /spotify/moods` devuelve catálogo de moods con descripción y tuners para UI dinámica.
-- Tuners opcionales en `recommendations`: `target_energy`, `target_valence`, `target_danceability`, `min_popularity`, `max_popularity`, `target_popularity`, `min_tempo`, `target_tempo`, `max_tempo` y variantes `min_/max_/target_` de acousticness, danceability, energy, instrumentalness, liveness, speechiness, valence.
-- Si envías `mood` y además tuners explícitos, los tuners explícitos tienen prioridad.
-- Estos endpoints usan catálogo público y no exponen `client_secret` al frontend.
+- `recommendations`, `moods` y `genres` se eliminaron por depender de la familia `recommendations`, marcada como deprecated por Spotify.
+- Los endpoints de catálogo usan Client Credentials y no exponen `client_secret` al frontend.
+- Los endpoints de `player` requieren que el usuario vincule su cuenta antes con `/spotify/login` (Authorization Code flow); los tokens se guardan por usuario en DynamoDB (`SpotifyUserTokens`).
 
 ---
 
@@ -375,7 +385,11 @@ Cuando SAM pregunte parámetros de Spotify, configura:
 SpotifyClientId: <tu_client_id>
 SpotifyClientSecret: <tu_client_secret>
 SpotifyMarket: CO
+SpotifyRedirectUri: https://<tu-api-id>.execute-api.<region>.amazonaws.com/spotify/callback
+SpotifyStateSecret: <secreto_aleatorio_largo>
 ```
+
+`SpotifyRedirectUri` debe coincidir exactamente con la URL registrada en el dashboard de Spotify Developer para tu app (Redirect URIs).
 
 #### 4. Despliegue Rápido (Siguientes veces)
 ```bash

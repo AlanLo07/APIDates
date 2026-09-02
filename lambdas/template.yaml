@@ -28,6 +28,15 @@ Parameters:
     Type: String
     Default: CO
     Description: "Market default ISO 3166-1 alpha-2 para Spotify"
+  SpotifyRedirectUri:
+    Type: String
+    Default: ""
+    Description: "URL de callback OAuth de Spotify (debe apuntar a /spotify/callback y estar registrada en el dashboard de Spotify)"
+  SpotifyStateSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: "Secreto para firmar el parametro state del flujo OAuth de Spotify (Authorization Code)"
   CognitoCallbackUrl:
     Type: String
     Default: "http://localhost:5173/callback"
@@ -1084,19 +1093,25 @@ Resources:
             Method: PATCH
             Path: /checklists/{checklistId}/items/{itemId}/comprado
 
-  # ── Lambda: Spotify API (catalogo y recomendaciones por busqueda) ─────────
+  # ── Lambda: Spotify API (catalogo + player con vinculacion de usuario) ────
   SpotifyFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: spotify-api
       CodeUri: functions/SpotifyAPI/
       Handler: handler.lambda_handler
-      Description: "Endpoints GET de Spotify para busqueda y recomendaciones"
+      Description: "Endpoints de Spotify: catalogo (search/tracks/artists/albums/playlists) y player"
       Environment:
         Variables:
           SPOTIFY_CLIENT_ID: !Ref SpotifyClientId
           SPOTIFY_CLIENT_SECRET: !Ref SpotifyClientSecret
           SPOTIFY_MARKET: !Ref SpotifyMarket
+          SPOTIFY_REDIRECT_URI: !Ref SpotifyRedirectUri
+          SPOTIFY_STATE_SECRET: !Ref SpotifyStateSecret
+          SPOTIFY_TOKENS_TABLE: !Ref SpotifyTokensTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SpotifyTokensTable
       Events:
         SpotifySearch:
           Type: HttpApi
@@ -1104,24 +1119,6 @@ Resources:
             ApiId: !Ref CitasApi
             Method: GET
             Path: /spotify/search
-        SpotifyRecommendations:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref CitasApi
-            Method: GET
-            Path: /spotify/recommendations
-        SpotifyMoods:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref CitasApi
-            Method: GET
-            Path: /spotify/moods
-        SpotifyGenres:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref CitasApi
-            Method: GET
-            Path: /spotify/genres
         SpotifyGetTrack:
           Type: HttpApi
           Properties:
@@ -1140,6 +1137,114 @@ Resources:
             ApiId: !Ref CitasApi
             Method: GET
             Path: /spotify/artists/{id}/top-tracks
+        SpotifyGetArtistAlbums:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/artists/{id}/albums
+        SpotifyGetAlbum:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/albums/{id}
+        SpotifyGetAlbumTracks:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/albums/{id}/tracks
+        SpotifyGetPlaylist:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/playlists/{id}
+        SpotifyGetPlaylistTracks:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/playlists/{id}/tracks
+        SpotifyLogin:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/login
+        SpotifyCallback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/callback
+            Auth:
+              Authorizer: NONE
+        SpotifyPlayerState:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/player
+        SpotifyPlayerCurrentlyPlaying:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/player/currently-playing
+        SpotifyPlayerDevices:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/player/devices
+        SpotifyPlayerPlay:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /spotify/player/play
+        SpotifyPlayerPause:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /spotify/player/pause
+        SpotifyPlayerVolume:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /spotify/player/volume
+        SpotifyPlayerNext:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /spotify/player/next
+        SpotifyPlayerPrevious:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /spotify/player/previous
+
+  # ── DynamoDB: Tokens de usuario vinculados a Spotify (Authorization Code) ─
+  SpotifyTokensTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: SpotifyUserTokens
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
 
   # ── DynamoDB: Tabla Bodas (agregado completo) ────────────────────────────
   BodasTable:

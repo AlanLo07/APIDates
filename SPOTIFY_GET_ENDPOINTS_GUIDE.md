@@ -1,103 +1,45 @@
-# Spotify Web API - Endpoints GET para APIDates
+# Spotify Web API - Endpoints para APIDates
 
 ## Enfoque de autenticacion usado en este proyecto
 
-Este backend usa Client Credentials (sin login en la app cliente).
-
-Eso permite consultar catalogo publico de Spotify desde backend, pero no datos privados de usuario.
+- **Catalogo publico** (search, tracks, artists, albums, playlists): Client Credentials, sin login del usuario final.
+- **Player** (reproduccion en tiempo real del usuario): Authorization Code flow. El usuario vincula su cuenta de Spotify una vez via `/spotify/login` y el backend guarda `access_token`/`refresh_token` por usuario en DynamoDB (`SpotifyUserTokens`), renovando el token automaticamente cuando expira.
 
 ## Endpoints implementados en nuestro backend
 
 - GET /spotify/search?q=...&type=track&limit=10&market=CO
-- GET /spotify/recommendations?q=...&limit=20&market=CO&mood=romantico
-- GET /spotify/moods
-- GET /spotify/genres?q=pop&limit=50
 - GET /spotify/tracks/{id}?market=CO
 - GET /spotify/artists/{id}
 - GET /spotify/artists/{id}/top-tracks?market=CO&limit=10
+- GET /spotify/artists/{id}/albums?market=CO&limit=20
+- GET /spotify/albums/{id}?market=CO
+- GET /spotify/albums/{id}/tracks?market=CO&limit=20
+- GET /spotify/playlists/{id}?market=CO
+- GET /spotify/playlists/{id}/tracks?market=CO&limit=20
+- GET /spotify/login (requiere JWT, devuelve `authUrl` para redirigir al usuario a Spotify)
+- GET /spotify/callback (publico, Spotify redirige aqui con `code`/`state`)
+- GET /spotify/player?market=CO
+- GET /spotify/player/currently-playing?market=CO
+- GET /spotify/player/devices
+- PUT /spotify/player/play
+- PUT /spotify/player/pause
+- PUT /spotify/player/volume?volume_percent=50
+- POST /spotify/player/next
+- POST /spotify/player/previous
 
-### Logica de fallback en recommendations
+> `recommendations`, `moods` y `genres` se eliminaron: dependian de la familia `/v1/recommendations`, marcada como deprecated por Spotify.
 
-Endpoint: GET /spotify/recommendations?q=...&limit=20&market=CO
-
-1. Intenta encontrar track semilla por busqueda de texto.
-2. Si no encuentra track, busca artista por texto.
-3. Si encuentra artista, intenta usar su top track como semilla.
-4. Si no hay top tracks, usa seed_artists directamente para no fallar.
-
-La respuesta ahora incluye `fallback_used` para indicar si se aplico fallback.
-
-### Parametros opcionales (tuners) en recommendations
-
-Puedes enviar tuners para controlar el mood de los resultados:
-
-- Popularidad (0-100):
-	- `min_popularity`, `target_popularity`, `max_popularity`
-- Tempo/BPM (0-300):
-	- `min_tempo`, `target_tempo`, `max_tempo`
-- Audio features (0.0-1.0):
-	- `min_`, `target_`, `max_` para:
-		- `acousticness`
-		- `danceability`
-		- `energy`
-		- `instrumentalness`
-		- `liveness`
-		- `speechiness`
-		- `valence`
-
-Ejemplos:
-- /spotify/recommendations?q=morat&limit=20&target_energy=0.75&target_valence=0.8
-- /spotify/recommendations?q=rock%20latino&min_popularity=40&target_danceability=0.6
-- /spotify/recommendations?q=fiesta&min_tempo=110&max_tempo=150&target_energy=0.9
-
-### Presets de mood en recommendations
-
-Puedes simplificar la llamada usando `mood`:
-
-- `romantico`
-- `fiesta`
-- `chill`
-- `focus`
-
-Ejemplos:
-- /spotify/recommendations?q=camila&limit=20&mood=romantico
-- /spotify/recommendations?q=party&limit=20&mood=fiesta
-- /spotify/recommendations?q=lofi&limit=20&mood=chill
-- /spotify/recommendations?q=instrumental&limit=20&mood=focus
-
-Regla de prioridad:
-- Si envias `mood` y tuners explicitos en la misma llamada, los tuners explicitos sobrescriben el preset.
-
-Respuesta enriquecida:
-- `mood`: preset recibido
-- `preset_tuners`: valores aportados por el preset
-- `explicit_tuners`: tuners enviados en query
-- `tuners`: resultado final aplicado en Spotify
-
-### Endpoint backend para catalogo de moods
-
-- Ruta: GET /spotify/moods
-- Uso: poblar selects/toggles de mood en frontend sin hardcode.
-- Respuesta: lista de moods con `id`, `label`, `description` y `tuners` sugeridos.
-
-## Endpoints GET de Spotify recomendados (compatibles con Client Credentials)
+## Endpoints GET de catalogo (compatibles con Client Credentials)
 
 1. Buscar contenido
 - Spotify: GET /v1/search
-- Uso: encontrar track semilla para recomendaciones, buscar artistas o albumes.
+- Uso: encontrar tracks, artistas, albumes o playlists.
 - Parametros clave: q, type, market, limit, offset.
 - Referencia: https://developer.spotify.com/documentation/web-api/reference/search
 
-2. Recomendaciones por semillas
-- Spotify: GET /v1/recommendations
-- Uso: recomendar tracks similares usando seed_tracks, seed_artists o seed_genres.
-- Parametros clave: seed_tracks o seed_artists o seed_genres, market, limit.
-- Nota: documentacion marca OAuth 2.0 como deprecated en esta pagina, pero el endpoint sigue disponible para catalogo segun el flujo vigente del app.
-- Referencia: https://developer.spotify.com/documentation/web-api/reference/get-recommendations
-
-3. Detalle de track
+2. Detalle de track
 - Spotify: GET /v1/tracks/{id}
-- Uso: enriquecer resultados de busqueda/recomendaciones.
+- Uso: enriquecer resultados de busqueda.
 - Parametros clave: id, market.
 - Referencia: https://developer.spotify.com/documentation/web-api/reference/get-track
 
@@ -122,42 +64,80 @@ Respuesta enriquecida:
 - Ejemplo:
 	- /spotify/artists/4gzpq5DPGxSnKTe4SA8HAU/top-tracks?market=CO&limit=5
 
-6. Album de track
+6. Detalle de album
 - Spotify: GET /v1/albums/{id}
-- Uso: ampliar datos visuales del resultado (portadas, fecha, total de tracks).
+- Uso: portada, fecha de lanzamiento y total de tracks.
 - Parametros clave: id, market.
 - Referencia: https://developer.spotify.com/documentation/web-api/reference/get-an-album
 
-7. Generos disponibles para recomendaciones
-- Spotify: GET /v1/recommendations/available-genre-seeds
-- Uso: poblar filtros de genero en frontend para recomendaciones mas precisas.
-- Referencia: https://developer.spotify.com/documentation/web-api/reference/get-recommendation-genres
+7. Tracks de album
+- Spotify: GET /v1/albums/{id}/tracks
+- Uso: listar canciones de un album.
+- Parametros clave: id, market, limit, offset.
+- Referencia: https://developer.spotify.com/documentation/web-api/reference/get-an-albums-tracks
 
-### Endpoint backend agregado para generos
+8. Albumes de artista
+- Spotify: GET /v1/artists/{id}/albums
+- Uso: listar discografia de un artista (albums/singles).
+- Parametros clave: id, market, limit, offset, include_groups.
+- Referencia: https://developer.spotify.com/documentation/web-api/reference/get-an-artists-albums
 
-- Ruta: GET /spotify/genres
-- Query params:
-	- q (opcional, filtra por texto parcial, por ejemplo pop)
-	- limit (opcional, default 100, max 200)
-- Ejemplo:
-	- /spotify/genres?q=pop&limit=20
+9. Detalle de playlist
+- Spotify: GET /v1/playlists/{id}
+- Uso: mostrar nombre, owner, portada y total de tracks.
+- Parametros clave: id, market, fields.
+- Referencia: https://developer.spotify.com/documentation/web-api/reference/get-playlist
 
-## Endpoints GET que NO aplican sin login de usuario
+10. Tracks de playlist
+- Spotify: GET /v1/playlists/{id}/tracks
+- Uso: listar canciones de una playlist publica.
+- Parametros clave: id, market, limit, offset, fields.
+- Referencia: https://developer.spotify.com/documentation/web-api/reference/get-playlists-tracks
 
-Estos requieren token de usuario (Authorization Code), no solo Client Credentials:
+## Player (requiere cuenta de usuario vinculada)
 
-- GET /v1/me
-- GET /v1/me/top/tracks
-- GET /v1/me/player/recently-played
-- GET /v1/me/playlists
-- GET /v1/me/tracks
+El Player NO funciona con Client Credentials; Spotify exige un token de usuario con scopes `user-read-playback-state`, `user-modify-playback-state` y `user-read-currently-playing`.
+
+### Flujo de vinculacion (Authorization Code)
+
+1. Frontend llama `GET /spotify/login` (autenticado con JWT de la app). El backend responde `{ "authUrl": "https://accounts.spotify.com/authorize?..." }`.
+2. Frontend redirige/abre `authUrl` en el navegador. El usuario aprueba los permisos en Spotify.
+3. Spotify redirige a `GET /spotify/callback?code=...&state=...` (ruta publica, sin JWT). El backend valida `state` (firmado con HMAC), intercambia `code` por `access_token`/`refresh_token` y los guarda en DynamoDB (`SpotifyUserTokens`) usando el `sub` del usuario como llave.
+4. Desde ese momento, los endpoints `/spotify/player/*` funcionan para ese usuario; el `refresh_token` se usa automaticamente cuando el `access_token` expira.
+
+### Endpoints de Player
+
+- GET /spotify/player?market=CO — estado de reproduccion (dispositivo activo, track actual, `is_playing`).
+- GET /spotify/player/currently-playing?market=CO — track actual con mas detalle.
+- GET /spotify/player/devices — dispositivos disponibles del usuario.
+- PUT /spotify/player/play — reanuda o inicia reproduccion. Query opcional `device_id`; body opcional `context_uri` (album/playlist URI) o `uris` (lista separada por comas de track URIs).
+- PUT /spotify/player/pause — pausa reproduccion. Query opcional `device_id`.
+- PUT /spotify/player/volume?volume_percent=50 — ajusta volumen (0-100). Query opcional `device_id`.
+- POST /spotify/player/next — siguiente pista. Query opcional `device_id`.
+- POST /spotify/player/previous — pista anterior. Query opcional `device_id`.
+
+Referencias:
+- https://developer.spotify.com/documentation/web-api/reference/get-information-about-the-users-current-playback
+- https://developer.spotify.com/documentation/web-api/reference/get-the-users-currently-playing-track
+- https://developer.spotify.com/documentation/web-api/reference/get-a-users-available-devices
+- https://developer.spotify.com/documentation/web-api/reference/start-a-users-playback
+- https://developer.spotify.com/documentation/web-api/reference/pause-a-users-playback
+- https://developer.spotify.com/documentation/web-api/reference/skip-users-playback-to-next-track
+- https://developer.spotify.com/documentation/web-api/reference/skip-users-playback-to-previous-track
+- https://developer.spotify.com/documentation/web-api/reference/set-volume-for-users-playback
+
+### Variables de entorno requeridas para Player
+
+- `SPOTIFY_REDIRECT_URI`: debe coincidir con la URL registrada en el dashboard de Spotify Developer (ej. `https://{api}.execute-api.{region}.amazonaws.com/spotify/callback`).
+- `SPOTIFY_STATE_SECRET`: secreto usado para firmar (HMAC-SHA256) el parametro `state` y evitar CSRF/forgery en el callback.
+- `SPOTIFY_TOKENS_TABLE`: nombre de la tabla DynamoDB donde se guardan los tokens por usuario.
 
 ## Recomendacion para la fase 1 del proyecto
 
-1. Mantener search + recommendations como flujo principal.
-2. Ya implementado: fallback a artista/top-tracks cuando no hay track semilla.
-3. Mantener market por defecto en CO, permitiendo override por query param.
-4. Evitar guardar o exponer tokens en frontend.
+1. Mantener `search` como flujo principal de descubrimiento de catalogo.
+2. Mantener market por defecto en CO, permitiendo override por query param.
+3. Evitar guardar o exponer `client_secret` o tokens de usuario en el frontend; el frontend solo recibe `authUrl` y nunca ve `access_token`/`refresh_token` directamente.
+4. Los endpoints de player deben usarse solo despues de confirmar que el usuario vinculo su cuenta (manejar el error 400 "Usuario no ha vinculado su cuenta de Spotify" mostrando el boton de conexion).
 
 ## Politicas relevantes de Spotify
 
