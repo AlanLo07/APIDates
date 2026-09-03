@@ -150,8 +150,20 @@ def lambda_handler(event, context):
         logger.warning("🟡 Validacion Spotify: %s", exc)
         return build_response(400, {"error": str(exc)})
     except HTTPError as exc:
-        logger.error("🔴 Spotify HTTPError status=%s", exc.code)
-        return build_response(exc.code, {"error": "Error de Spotify API", "status": exc.code})
+        err_detail = ""
+        try:
+            raw_err = exc.read()
+            if raw_err:
+                parsed_err = json.loads(raw_err.decode("utf-8"))
+                if isinstance(parsed_err.get("error"), dict):
+                    err_detail = parsed_err.get("error", {}).get("message", "")
+                elif isinstance(parsed_err.get("error"), str):
+                    err_detail = parsed_err.get("error", "")
+        except Exception:
+            pass
+        logger.error("🔴 Spotify HTTPError status=%s detail=%s", exc.code, err_detail)
+        msg = f"Error de Spotify API: {err_detail}" if err_detail else "Error de Spotify API"
+        return build_response(exc.code, {"error": msg, "status": exc.code})
     except URLError as exc:
         logger.error("🔴 Spotify URLError reason=%s", exc.reason)
         return build_response(502, {"error": "No se pudo conectar con Spotify"})
@@ -598,9 +610,13 @@ def _spotify_user_request(method: str, path: str, user_id: str, params: dict | N
 
     with urlopen(req, timeout=10) as response:
         raw = response.read()
-        if not raw:
+        if not raw or not raw.strip():
             return {}
-        return json.loads(raw.decode("utf-8"))
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.warning("🟡 Respuesta no JSON de Spotify user request path=%s: %s", path, raw)
+            return {}
 
 
 # ─── Player (requiere cuenta de usuario vinculada) ──────────────────────────
@@ -725,7 +741,14 @@ def _spotify_get(path: str, params: dict | None = None) -> dict:
     )
 
     with urlopen(req, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
+        raw = response.read()
+        if not raw or not raw.strip():
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            logger.warning("🟡 Respuesta no JSON de Spotify GET path=%s: %s", path, raw)
+            return {}
 
 
 def _get_access_token() -> str:
