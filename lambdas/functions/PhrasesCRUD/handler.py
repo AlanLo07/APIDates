@@ -97,7 +97,7 @@ def get_item(item_id: str):
     result = table.get_item(Key={"id": item_id})
     if "Item" not in result:
         return build_response(404, {"error": f"Frase '{item_id}' no encontrada"})
-    return build_response(200, _with_compleatado_default(result["Item"]))
+    return build_response(200, _with_completado_default(result["Item"]))
 
 
 def get_all_items(query_params: dict):
@@ -112,7 +112,7 @@ def get_all_items(query_params: dict):
     if last_key := query_params.get("lastKey"):
         params["ExclusiveStartKey"] = {"id": last_key}
 
-    items = [_with_compleatado_default(item) for item in scan_all(table, **params)]
+    items = [_with_completado_default(item) for item in scan_all(table, **params)]
 
     response_body = {
         "items": items,
@@ -135,7 +135,7 @@ def get_random(query_params: dict):
     if not items:
         return build_response(404, {"error": "No hay frases disponibles con los filtros aplicados"})
 
-    chosen = _with_compleatado_default(random.choice(items))
+    chosen = _with_completado_default(random.choice(items))
     log_event(logger, "🔵", "Frase aleatoria elegida", item_id=chosen.get("id"), title=chosen.get("title"))
     return build_response(200, chosen)
 
@@ -181,7 +181,7 @@ def update_item(item_id: str, data: dict):
     merged = {**existing["Item"], **data}
     _validate(merged)
     item = _normalize(merged)
-    item["compleatado"] = bool(data.get("compleatado", existing["Item"].get("compleatado", False)))
+    item["completado"] = bool(data.get("completado", existing["Item"].get("comple   tado", False)))
 
     update_fields = {key: value for key, value in item.items() if key != "id"}
     expression_parts = []
@@ -241,12 +241,12 @@ def _normalize(data: dict, *, is_create: bool = False) -> dict:
         "credits":     data.get("credits", "").strip(),
         "emoji":       data.get("emoji", "💬").strip(),
         "link":        data.get("link", "").strip(),
-        "compleatado": False if is_create else bool(data.get("compleatado", False)),
+        "completado": False if is_create else bool(data.get("completado", False)),
     }
 
 
-def _with_compleatado_default(item: dict) -> dict:
-    """Agrega 'compleatado': False a frases legacy que no tienen el campo."""
-    if "compleatado" not in item:
-        item = {**item, "compleatado": False}
+def _with_completado_default(item: dict) -> dict:
+    """Agrega 'completado': False a frases legacy que no tienen el campo."""
+    if "completado" not in item:
+        item = {**item, "completado": False}
     return item
