@@ -1,0 +1,9 @@
+{
+  "include": ["lambdas"],
+  "executionEnvironments": [
+    {
+      "root": "lambdas/functions",
+      "extraPaths": ["lambdas/layers/baselayer/python"]
+    }
+  ]
+}

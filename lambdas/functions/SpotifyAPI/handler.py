@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import time
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -65,7 +66,7 @@ TOKEN_CACHE: dict[str, str | int] = {
     "expires_at": 0,
 }
 
-_dynamodb = boto3.resource("dynamodb")
+_dynamodb: Any = boto3.resource("dynamodb")
 
 
 def _tokens_table():
