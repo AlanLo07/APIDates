@@ -1181,6 +1181,18 @@ Resources:
             Path: /spotify/callback
             Auth:
               Authorizer: NONE
+        SpotifyPlayerToken:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /spotify/player/token
+        SpotifyPlayerTransfer:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /spotify/player/transfer
         SpotifyPlayerState:
           Type: HttpApi
           Properties:

@@ -20,6 +20,8 @@ Endpoints expuestos:
 - GET  /spotify/playlists/{id}/tracks?market=CO
 - GET  /spotify/login                          (requiere JWT, devuelve authUrl)
 - GET  /spotify/callback                       (publico, redirect de Spotify)
+- GET  /spotify/player/token                   (access_token crudo para el Web Playback SDK)
+- PUT  /spotify/player/transfer?device_id=...   (activa el device del Web Playback SDK)
 - GET  /spotify/player?market=CO
 - GET  /spotify/player/currently-playing?market=CO
 - GET  /spotify/player/devices
@@ -28,6 +30,17 @@ Endpoints expuestos:
 - PUT  /spotify/player/volume?volume_percent=50
 - POST /spotify/player/next
 - POST /spotify/player/previous
+
+Web Playback SDK (https://developer.spotify.com/documentation/web-playback-sdk):
+El SDK corre en el navegador y crea su propio dispositivo de Spotify Connect.
+Sin un dispositivo activo, /me/player/play|pause fallan con 404 NO_ACTIVE_DEVICE,
+lo que en el front se percibe como "se desconecta". El flujo correcto es:
+1) Front pide un access_token via /spotify/player/token.
+2) Front instancia window.Spotify.Player con ese token (scope streaming requerido).
+3) Al emitir el evento 'ready' con su device_id, el front llama a
+   /spotify/player/transfer?device_id=... una sola vez para activarlo.
+4) A partir de ahi, usar player.togglePlay()/nextTrack()/previousTrack() del SDK
+   (o los endpoints REST pasando ese mismo device_id) mantiene la sesion estable.
 
 Nota: recommendations/moods/genres se eliminaron porque dependen de endpoints
 de Spotify marcados como deprecated (recommendations family).
@@ -59,7 +72,11 @@ DEFAULT_MARKET = os.environ.get("SPOTIFY_MARKET", "CO")
 SPOTIFY_REDIRECT_URI = os.environ.get("SPOTIFY_REDIRECT_URI", "")
 SPOTIFY_STATE_SECRET = os.environ.get("SPOTIFY_STATE_SECRET", "")
 SPOTIFY_TOKENS_TABLE = os.environ.get("SPOTIFY_TOKENS_TABLE", "")
-PLAYER_SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+# streaming/user-read-email/user-read-private son requeridos por el Web Playback SDK
+PLAYER_SCOPES = (
+    "streaming user-read-email user-read-private "
+    "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+)
 
 TOKEN_CACHE: dict[str, str | int] = {
     "access_token": "",
@@ -91,6 +108,9 @@ def lambda_handler(event, context):
         if method == "GET":
             if path.endswith("/spotify/search"):
                 return _search(event)
+
+            if path.endswith("/spotify/player/token"):
+                return _get_player_token(event)
 
             if path.endswith("/spotify/player/currently-playing"):
                 return _get_player_currently_playing(event)
@@ -126,6 +146,9 @@ def lambda_handler(event, context):
                 return _get_playlist(event)
 
         if method == "PUT":
+            if path.endswith("/spotify/player/transfer"):
+                return _player_transfer(event)
+
             if path.endswith("/spotify/player/play"):
                 return _player_play(event)
 
@@ -621,6 +644,33 @@ def _spotify_user_request(method: str, path: str, user_id: str, params: dict | N
 
 
 # ─── Player (requiere cuenta de usuario vinculada) ──────────────────────────
+
+
+def _get_player_token(event):
+    """Access token crudo para instanciar window.Spotify.Player en el front (Web Playback SDK)."""
+    user_id = _require_user_id(event)
+    logger.info("🔵 Get player token (Web Playback SDK) user_id_present=%s", bool(user_id))
+
+    access_token = _get_user_access_token(user_id)
+
+    logger.info("🟢 Player token entregado user_id_present=%s", bool(user_id))
+    return build_response(200, {"access_token": access_token})
+
+
+def _player_transfer(event):
+    """Activa el device del Web Playback SDK como dispositivo de reproduccion activo."""
+    user_id = _require_user_id(event)
+    device_id = (_get_query(event, "device_id") or "").strip()
+    if not device_id:
+        raise ValueError("Parametro requerido: device_id")
+
+    play = (_get_query(event, "play") or "false").strip().lower() == "true"
+
+    logger.info("🔵 Player transfer user_id_present=%s device_present=%s", bool(user_id), bool(device_id))
+    _spotify_user_request("PUT", "/me/player", user_id, body={"device_ids": [device_id], "play": play})
+
+    logger.info("🟢 Player transferido al device del SDK")
+    return build_response(200, {"message": "Reproduccion transferida", "device_id": device_id})
 
 
 def _get_player_state(event):
