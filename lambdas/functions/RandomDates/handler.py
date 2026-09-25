@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, DecimalEncoder, log_event, scan_all
+from common.utils import build_response, cached_scan_all, DecimalEncoder, log_event, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -129,7 +129,10 @@ def _fetch_planes(tipo: str | None, solo_nuevos: bool) -> list:
             expr = expr & fe
         params["FilterExpression"] = expr
 
-    items = scan_all(planes_table, **params)
+    # Cachea el scan 60s por combinación de filtros: evita re-escanear el
+    # catálogo completo de planes en cada sugerencia aleatoria.
+    cache_key = f"planes:random:{tipo or 'all'}:{solo_nuevos}"
+    items = cached_scan_all(planes_table, cache_key=cache_key, ttl_seconds=60, **params)
     log_event(logger, "🔵", "Scan de planes completado", count=len(items))
     return items
 

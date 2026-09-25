@@ -64,6 +64,31 @@ def query_all(table, **query_kwargs) -> list[dict]:
         request["ExclusiveStartKey"] = last_key
 
 
+# Cache en memoria del contenedor Lambda: evita escanear la tabla completa en cada
+# invocación mientras el contenedor siga "caliente" (se pierde en cold start).
+_SCAN_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
+def cached_scan_all(table, cache_key: str, ttl_seconds: float = 60.0, filter_expression=None, **scan_kwargs) -> list[dict]:
+    """
+    Como scan_all(), pero reutiliza el resultado durante `ttl_seconds` si el
+    contenedor Lambda sigue vivo. Pensado para listados/selecciones aleatorias
+    que no requieren datos al segundo (reduce RCUs consumidas).
+    """
+    import time
+
+    now = time.monotonic()
+    cached = _SCAN_CACHE.get(cache_key)
+    if cached is not None:
+        cached_at, items = cached
+        if now - cached_at < ttl_seconds:
+            return items
+
+    items = scan_all(table, filter_expression=filter_expression, **scan_kwargs)
+    _SCAN_CACHE[cache_key] = (now, items)
+    return items
+
+
 class DecimalEncoder(json.JSONEncoder):
     """Serializa Decimal de DynamoDB a float/int para JSON."""
     def default(self, obj):

@@ -186,7 +186,12 @@ def lambda_handler(event, context):
         except Exception:
             pass
         logger.error("🔴 Spotify HTTPError status=%s detail=%s", exc.code, err_detail)
-        msg = f"Error de Spotify API: {err_detail}" if err_detail else "Error de Spotify API"
+        # Los mensajes 4xx de Spotify son validaciones utiles para el cliente (ej. id invalido);
+        # los 5xx son detalles internos de Spotify que no deben exponerse.
+        if exc.code >= 500:
+            msg = "Error del servicio de Spotify"
+        else:
+            msg = f"Error de Spotify API: {err_detail}" if err_detail else "Error de Spotify API"
         return build_response(exc.code, {"error": msg, "status": exc.code})
     except URLError as exc:
         logger.error("🔴 Spotify URLError reason=%s", exc.reason)

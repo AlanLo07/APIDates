@@ -21,7 +21,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, get_path_param, log_event, parse_body, scan_all
+from common.utils import build_response, cached_scan_all, get_path_param, log_event, parse_body, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -125,12 +125,15 @@ def get_random(query_params: dict):
     """Devuelve una frase aleatoria, opcionalmente filtrada por ?type=cancion."""
     params: dict = {}
 
-    if phrase_type := query_params.get("type"):
+    phrase_type = query_params.get("type")
+    if phrase_type:
         if phrase_type not in VALID_TYPES:
             return build_response(400, {"error": f"Tipo inválido: '{phrase_type}'"})
         params["FilterExpression"] = Attr("type").eq(phrase_type)
 
-    items = scan_all(table, **params)
+    # Cachea el scan 60s por tipo: evita re-escanear la tabla completa en cada
+    # elección aleatoria mientras el contenedor Lambda siga vivo.
+    items = cached_scan_all(table, cache_key=f"phrases:random:{phrase_type or 'all'}", ttl_seconds=60, **params)
 
     if not items:
         return build_response(404, {"error": "No hay frases disponibles con los filtros aplicados"})
@@ -181,7 +184,7 @@ def update_item(item_id: str, data: dict):
     merged = {**existing["Item"], **data}
     _validate(merged)
     item = _normalize(merged)
-    item["completado"] = bool(data.get("completado", existing["Item"].get("comple   tado", False)))
+    item["completado"] = bool(data.get("completado", existing["Item"].get("completado", False)))
 
     update_fields = {key: value for key, value in item.items() if key != "id"}
     expression_parts = []

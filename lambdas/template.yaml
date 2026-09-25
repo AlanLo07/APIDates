@@ -61,7 +61,7 @@ Globals:
   Function:
     Runtime: python3.13
     Timeout: 29
-    MemorySize: 128
+    MemorySize: 256 # 128MB asigna la CPU minima de Lambda; 256MB reduce latencia con costo marginal
     Tracing: Active
     Environment:
       Variables:

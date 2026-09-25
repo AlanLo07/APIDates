@@ -17,13 +17,13 @@ import logging
 import os
 import random
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
-from common.utils import build_response, get_path_param, log_event, parse_body, scan_all
+from common.utils import build_response, cached_scan_all, get_path_param, log_event, parse_body, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -126,12 +126,15 @@ def get_random(query_params: dict):
     """Devuelve un reto aleatorio, opcionalmente filtrado por ?level=suave."""
     params: dict = {}
 
-    if level := query_params.get("level"):
+    level = query_params.get("level")
+    if level:
         if level not in VALID_LEVELS:
             return build_response(400, {"error": f"Nivel inválido: '{level}'"})
         params["FilterExpression"] = Attr("level").eq(level)
 
-    items = scan_all(table, **params)
+    # Cachea el scan 60s por combinación de filtros: evita re-escanear la tabla
+    # completa en cada tirada aleatoria mientras el contenedor Lambda siga vivo.
+    items = cached_scan_all(table, cache_key=f"challenges:random:{level or 'all'}", ttl_seconds=60, **params)
 
     if not items:
         return build_response(
@@ -189,7 +192,7 @@ def update_item(item_id: str, data: dict):
         )
 
     # Agregar timestamp de actualización
-    update_fields["updatedAt"] = datetime.utcnow().isoformat() + "Z"
+    update_fields["updatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     expr_parts  = []
     expr_values = {}
@@ -250,7 +253,7 @@ def _validate(data: dict):
 
 def _normalize(data: dict) -> dict:
     """Construye el item completo con valores por defecto."""
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "id":        data.get("id") or str(uuid.uuid4()),
         "text":      data["text"].strip(),
