@@ -9,6 +9,7 @@ Funcionalidad:
 ✅ Filtrado por ?level=facil
 ✅ GET /random — devuelve una posición aleatoria
 ✅ Batch import (POST con lista)
+✅ Estado de completado para seguimiento de progreso
 ✅ CORS headers incluidos
 """
 import json
@@ -97,7 +98,7 @@ def get_item(item_id: str):
     result = table.get_item(Key={"id": item_id})
     if "Item" not in result:
         return build_response(404, {"error": f"Posición '{item_id}' no encontrada"})
-    return build_response(200, result["Item"])
+    return build_response(200, _with_completado_default(result["Item"]))
 
 
 def get_all_items(query_params: dict):
@@ -115,9 +116,16 @@ def get_all_items(query_params: dict):
     if last_key := query_params.get("lastKey"):
         params["ExclusiveStartKey"] = {"id": last_key}
 
-    items = scan_all(table, **params)
+    items = [_with_completado_default(item) for item in scan_all(table, **params)]
 
-    return build_response(200, {"items": items, "count": len(items)})
+    return build_response(
+        200,
+        {
+            "items": items,
+            "count": len(items),
+            "resumen": _build_progress_summary(items),
+        },
+    )
 
 
 def get_random(query_params: dict):
@@ -137,7 +145,7 @@ def get_random(query_params: dict):
             {"error": "No hay posiciones disponibles con los filtros aplicados"},
         )
 
-    chosen = random.choice(items)
+    chosen = _with_completado_default(random.choice(items))
     log_event(logger, "🔵", "Posición aleatoria", item_id=chosen.get("id"), name=chosen.get("name"))
     return build_response(200, chosen)
 
@@ -186,6 +194,9 @@ def update_item(item_id: str, data: dict):
             {"error": f"Nivel inválido: '{update_fields['level']}'. Válidos: {', '.join(VALID_LEVELS)}"},
         )
 
+    if "completado" in update_fields and not isinstance(update_fields["completado"], bool):
+        return build_response(400, {"error": "El campo 'completado' debe ser booleano"})
+
     expr_parts  = []
     expr_values = {}
     expr_names  = {}
@@ -231,6 +242,9 @@ def _validate(data: dict):
     if missing:
         raise ValueError(f"Campos requeridos faltantes: {missing}")
 
+    if "completado" in data and not isinstance(data["completado"], bool):
+        raise ValueError("El campo 'completado' debe ser booleano")
+
     for field in ("name", "shortDesc", "fullDesc", "tips"):
         if not isinstance(data.get(field), str) or not data[field].strip():
             raise ValueError(f"El campo '{field}' no puede estar vacío")
@@ -252,4 +266,23 @@ def _normalize(data: dict) -> dict:
         "tips":      data["tips"].strip(),
         "level":     data["level"],          # facil | medio | avanzado
         "link":      data.get("link", "").strip(),
+        "completado": bool(data.get("completado", False)),
+    }
+
+
+def _with_completado_default(item: dict) -> dict:
+    """Agrega 'completado': False a posiciones legacy sin el campo."""
+    if "completado" not in item:
+        item = {**item, "completado": False}
+    return item
+
+
+def _build_progress_summary(items: list[dict]) -> dict:
+    """Calcula el progreso del catálogo para el listado de posiciones."""
+    total = len(items)
+    completadas = sum(1 for item in items if item.get("completado", False))
+    return {
+        "totalPosiciones": total,
+        "completadasCount": completadas,
+        "progreso": completadas / total if total else 0,
     }
