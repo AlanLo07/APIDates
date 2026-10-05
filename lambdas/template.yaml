@@ -74,6 +74,7 @@ Globals:
         BODAS_TABLE_NAME: !Ref BodasTable
         FINANCES_TABLE_NAME: !Ref FinancesTable
         CHECKLISTS_TABLE_NAME: !Ref ChecklistsTable
+        COUPONS_TABLE_NAME: !Ref CouponsTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
       - !Ref CommonLayer
@@ -1002,6 +1003,86 @@ Resources:
             Method: GET
             Path: /finances/historico
 
+  # ── Lambda: Coupons CRUD ───────────────────────────────────────────────────
+  CouponsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: coupons-crud
+      CodeUri: functions/CouponsCRUD/
+      Handler: handler.lambda_handler
+      Description: "CRUD de cuponeras de regalos por usuario"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CouponsTable
+      Events:
+        GetCouponBook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /cuponera
+        CreateCouponBook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /cuponera
+        ReplaceCouponBook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /cuponera
+        DeleteCouponBook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /cuponera
+        ListGifts:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /cuponera/regalos
+        CreateGift:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /cuponera/regalos
+        GetGift:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /cuponera/regalos/{nombre}
+        UpdateGift:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /cuponera/regalos/{nombre}
+        DeleteGift:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /cuponera/regalos/{nombre}
+        SetGiftRedeemed:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PATCH
+            Path: /cuponera/regalos/{nombre}/canjear
+        SemiannualReset:
+          Type: Schedule
+          Properties:
+            Name: !Sub "${AWS::StackName}-coupons-semiannual-reset"
+            Description: "Descanjea todos los regalos cada seis meses"
+            Schedule: "cron(0 0 1 1,7 ? *)"
+            Enabled: false
+
   # ── Lambda: Checklists CRUD ────────────────────────────────────────────────
   ChecklistsFunction:
     Type: AWS::Serverless::Function
@@ -1381,6 +1462,28 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  # ── DynamoDB: Tabla Coupons (una cuponera por usuario) ─────────────────────
+  CouponsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: CouponsTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ApiUrl:
@@ -1468,3 +1571,11 @@ Outputs:
   ChecklistsEndpoint:
     Description: "Endpoint base de Checklists"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/checklists"
+
+  CouponsTableName:
+    Description: "Nombre de la tabla Coupons"
+    Value: !Ref CouponsTable
+
+  CouponsEndpoint:
+    Description: "Endpoint base de cuponeras"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/cuponera"
