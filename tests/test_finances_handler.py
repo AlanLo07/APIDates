@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 
@@ -20,8 +21,8 @@ def load_handler():
     resource.Table.return_value = MagicMock()
     with patch("boto3.resource", return_value=resource):
         spec = importlib.util.spec_from_file_location("finances_handler_test", HANDLER_PATH)
+        assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
         spec.loader.exec_module(module)
     return module, resource
 
@@ -38,6 +39,10 @@ def event(path="/finances", method="GET", sub="user-1", email="uno@example.com",
     }
 
 
+def lambda_context():
+    return SimpleNamespace(function_name="finances-crud-test")
+
+
 class FinancesHandlerTests(unittest.TestCase):
     def setUp(self):
         self.handler, self.resource = load_handler()
@@ -46,7 +51,7 @@ class FinancesHandlerTests(unittest.TestCase):
     def test_request_without_jwt_is_rejected(self):
         response = self.handler.lambda_handler(
             {"rawPath": "/finances", "requestContext": {"http": {"method": "GET"}}},
-            MagicMock(),
+            lambda_context(),
         )
 
         self.assertEqual(response["statusCode"], 401)
@@ -55,7 +60,7 @@ class FinancesHandlerTests(unittest.TestCase):
     def test_user_from_another_couple_is_rejected(self):
         self.table.get_item.side_effect = [{}, {}, {}]
 
-        response = self.handler.lambda_handler(event(), MagicMock())
+        response = self.handler.lambda_handler(event(), lambda_context())
 
         self.assertEqual(response["statusCode"], 403)
         self.assertEqual(self.table.get_item.call_count, 3)
@@ -94,7 +99,6 @@ class FinancesHandlerTests(unittest.TestCase):
             {"Item": {"coupleId": "couple-1"}},
         ]
         created = {"gastoId": "expense-1"}
-        self.handler.create_expense = MagicMock(return_value=(created, 201))
         request = event(
             path="/finances/gastos",
             method="POST",
@@ -107,10 +111,15 @@ class FinancesHandlerTests(unittest.TestCase):
             },
         )
 
-        response = self.handler.lambda_handler(request, MagicMock())
+        with patch.object(
+            self.handler,
+            "create_expense",
+            return_value=(created, 201),
+        ) as create_expense:
+            response = self.handler.lambda_handler(request, lambda_context())
 
         self.assertEqual(response["statusCode"], 201)
-        args = self.handler.create_expense.call_args.args
+        args = create_expense.call_args.args
         self.assertEqual(args[-2:], ("user-1", "uno@example.com"))
 
     def test_update_rejects_immutable_fields(self):
@@ -125,26 +134,29 @@ class FinancesHandlerTests(unittest.TestCase):
         self.table.update_item.assert_not_called()
 
     def test_moving_expense_recalculates_old_and_new_months(self):
-        self.handler.get_expense = MagicMock(return_value=({
+        current_expense = {
             "title": "Cena",
             "amount": self.handler.Decimal("10"),
             "date": "2026-09-30T20:00:00+00:00",
             "category": "dateNights",
             "monthYear": "2026-09",
-        }, 200))
+        }
         self.table.update_item.return_value = {
             "Attributes": {"monthYear": "2026-10"}
         }
-        self.handler.persist_monthly_stats = MagicMock()
 
-        _, status = self.handler.update_expense(
-            "PAREJA#couple-1",
-            "expense-1",
-            {"date": "2026-10-01T01:00:00+00:00"},
-        )
+        with (
+            patch.object(self.handler, "get_expense", return_value=(current_expense, 200)),
+            patch.object(self.handler, "persist_monthly_stats") as persist_monthly_stats,
+        ):
+            _, status = self.handler.update_expense(
+                "PAREJA#couple-1",
+                "expense-1",
+                {"date": "2026-10-01T01:00:00+00:00"},
+            )
 
         self.assertEqual(status, 200)
-        self.handler.persist_monthly_stats.assert_has_calls(
+        persist_monthly_stats.assert_has_calls(
             [
                 call("PAREJA#couple-1", "2026-09"),
                 call("PAREJA#couple-1", "2026-10"),
