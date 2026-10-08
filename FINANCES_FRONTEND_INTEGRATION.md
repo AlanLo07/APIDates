@@ -18,16 +18,21 @@ import 'dart:convert';
 
 class FinancesService {
   static const String _baseUrl = 'https://YOUR_API_ENDPOINT/finances';
-  
-  final String parejaId;
-  
-  FinancesService({required this.parejaId});
+
+  final String accessToken;
+
+  FinancesService({required this.accessToken});
+
+  Map<String, String> get _headers => {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer $accessToken',
+  };
 
   // 🟢 Obtener resumen completo
   Future<Map<String, dynamic>> getResumen() async {
     final response = await http.get(
-      Uri.parse('$_baseUrl/$parejaId/resumen'),
-      headers: {'Content-Type': 'application/json'},
+      Uri.parse('$_baseUrl/resumen'),
+      headers: _headers,
     );
     
     if (response.statusCode == 200) {
@@ -42,7 +47,7 @@ class FinancesService {
     String? month,
     String? category,
   }) async {
-    String url = '$_baseUrl/$parejaId/gastos';
+    String url = '$_baseUrl/gastos';
     
     List<String> params = [];
     if (month != null) params.add('month=$month');
@@ -54,7 +59,7 @@ class FinancesService {
     
     final response = await http.get(
       Uri.parse(url),
-      headers: {'Content-Type': 'application/json'},
+      headers: _headers,
     );
     
     if (response.statusCode == 200) {
@@ -72,18 +77,16 @@ class FinancesService {
     required DateTime date,
     required String category,
     String? note,
-    String createdBy = 'unknown',
   }) async {
     final response = await http.post(
-      Uri.parse('$_baseUrl/$parejaId/gastos'),
-      headers: {'Content-Type': 'application/json'},
+      Uri.parse('$_baseUrl/gastos'),
+      headers: _headers,
       body: json.encode({
         'title': title,
         'amount': amount,
         'date': date.toIso8601String(),
         'category': category,
         'note': note,
-        'createdBy': createdBy,
       }),
     );
     
@@ -112,8 +115,8 @@ class FinancesService {
     if (note != null) data['note'] = note;
     
     final response = await http.put(
-      Uri.parse('$_baseUrl/$parejaId/gastos/$gastoId'),
-      headers: {'Content-Type': 'application/json'},
+      Uri.parse('$_baseUrl/gastos/$gastoId'),
+      headers: _headers,
       body: json.encode(data),
     );
     
@@ -127,8 +130,8 @@ class FinancesService {
   // 🟢 Eliminar gasto
   Future<void> deleteGasto(String gastoId) async {
     final response = await http.delete(
-      Uri.parse('$_baseUrl/$parejaId/gastos/$gastoId'),
-      headers: {'Content-Type': 'application/json'},
+      Uri.parse('$_baseUrl/gastos/$gastoId'),
+      headers: _headers,
     );
     
     if (response.statusCode != 200) {
@@ -143,8 +146,8 @@ class FinancesService {
     String? notes,
   }) async {
     final response = await http.post(
-      Uri.parse('$_baseUrl/$parejaId/presupuesto/$monthYear'),
-      headers: {'Content-Type': 'application/json'},
+      Uri.parse('$_baseUrl/presupuesto/$monthYear'),
+      headers: _headers,
       body: json.encode({
         'amount': amount,
         'notes': notes,
@@ -161,8 +164,8 @@ class FinancesService {
   // 🟢 Obtener histórico de todos los meses
   Future<List<Map<String, dynamic>>> getHistorico({int limit = 12}) async {
     final response = await http.get(
-      Uri.parse('$_baseUrl/$parejaId/historico?limit=$limit'),
-      headers: {'Content-Type': 'application/json'},
+      Uri.parse('$_baseUrl/historico?limit=$limit'),
+      headers: _headers,
     );
     
     if (response.statusCode == 200) {
@@ -191,10 +194,10 @@ import 'finance_history.dart';
 class CoupleFinancesScreen extends StatefulWidget {
   const CoupleFinancesScreen({
     super.key,
-    this.parejaId, // 🔴 NUEVO: recibir parejaId
+    required this.accessToken,
   });
-  
-  final String? parejaId;
+
+  final String accessToken;
 
   @override
   State<CoupleFinancesScreen> createState() => _CoupleFinancesScreenState();
@@ -214,23 +217,9 @@ class _CoupleFinancesScreenState extends State<CoupleFinancesScreen> {
   @override
   void initState() {
     super.initState();
-    
-    // 🔵 IMPORTANTE: Asegurarse de tener parejaId
-    final parejaId = widget.parejaId ?? _getParejaIdFromStorage();
-    
-    if (parejaId == null) {
-      _error = 'parejaId no disponible. Crea una pareja primero.';
-      return;
-    }
-    
-    _service = FinancesService(parejaId: parejaId);
-    _loadData();
-  }
 
-  String? _getParejaIdFromStorage() {
-    // TODO: Implementar SharedPreferences para guardar parejaId
-    // return await prefs.getString('parejaId');
-    return null;
+    _service = FinancesService(accessToken: widget.accessToken);
+    _loadData();
   }
 
   // 🟢 Cargar datos del backend
@@ -748,14 +737,14 @@ class ApiConfig {
 ## 6️⃣ Manejo de Errores Comunes
 
 ```dart
-// 🔴 Error: "parejaId no disponible"
-// → Guarda parejaId en SharedPreferences cuando se cree la pareja
+// 🔴 Error: "Usuario no autenticado"
+// → Renueva el token de Cognito y vuelve a crear FinancesService
 
 // 🔴 Error: "400 Bad Request"
 // → Verifica que amounts sean positivos, categorías válidas, fechas ISO
 
 // 🔴 Error: "404 Not Found"
-// → ParejaId, gastoId o presupuesto no existen
+// → Gasto o presupuesto no existen
 
 // 🔴 Error: "500 Internal Server Error"
 // → Revisa los logs de CloudWatch de la Lambda
@@ -768,7 +757,7 @@ class ApiConfig {
 - [ ] Crear `FinancesService` con todos los métodos HTTP
 - [ ] Actualizar `CoupleFinancesScreen` para usar `_service`
 - [ ] Agregar `gastoId` al modelo `_ExpenseEntry`
-- [ ] Guardar `parejaId` en `SharedPreferences` después de crear pareja
+- [ ] Inyectar el access token vigente de Cognito en `FinancesService`
 - [ ] Cargar datos en `initState` con `_loadData()`
 - [ ] Actualizar llamadas de CRUD para usar servicios
 - [ ] Implementar manejo de errores con try-catch
@@ -780,19 +769,19 @@ class ApiConfig {
 ## 🚀 Flujo Típico
 
 1. **Primera vez**: Usuario abre app
-   - Llama `POST /finances` para crear pareja
-   - Guarda `parejaId` en SharedPreferences
-   - Llama `GET /finances/{parejaId}/resumen`
+  - Llama `POST /finances/init` para crear pareja
+  - Conserva la sesión de Cognito
+  - Llama `GET /finances/resumen`
 
 2. **Uso normal**: Agregar gasto
    - Usuario toca botón "Anotar gasto"
    - Lleña formulario
-   - Llama `POST /finances/{parejaId}/gastos`
-   - Llama `GET /finances/{parejaId}/gastos` para actualizar lista
+  - Llama `POST /finances/gastos`
+  - Llama `GET /finances/gastos` para actualizar lista
 
 3. **Ver histórico**: Toca botón "Histórico"
    - Navega a `FinanceHistoryScreen`
-   - Llama `GET /finances/{parejaId}/historico`
+  - Llama `GET /finances/historico`
    - Muestra últimos 12 meses con gráficos
 
 ---

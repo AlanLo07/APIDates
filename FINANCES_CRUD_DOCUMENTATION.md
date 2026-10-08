@@ -4,10 +4,10 @@
 
 API REST para gestión de finanzas compartidas de una pareja. Permite registrar gastos, establecer presupuestos mensuales, categorizar transacciones y visualizar históricos de gastos.
 
-**Modelo Simplificado (Una Pareja Única):**
-- 🔵 PK fija: `PAREJA#DEFAULT` (sin parejaId en rutas)
-- 🔵 Rutas más limpias y simples
-- 🔵 Mejor rendimiento para caso de uso único
+**Modelo autenticado por pareja:**
+- 🔵 PK interna: `PAREJA#{coupleId}`; el frontend no envía `coupleId` en las rutas.
+- 🔵 El backend resuelve la pareja desde los claims de Cognito y las membresías internas.
+- 🔵 Los datos históricos en `PAREJA#DEFAULT` se adoptan únicamente si el correo autenticado pertenece a esa pareja.
 
 **Características:**
 - ✅ Inicialización de pareja (POST /finances/init)
@@ -27,7 +27,7 @@ API REST para gestión de finanzas compartidas de una pareja. Permite registrar 
 ### Modelo de Pareja
 ```json
 {
-  "PK": "PAREJA#DEFAULT",
+  "PK": "PAREJA#{coupleId}",
   "SK": "META",
   "user1": {
     "name": "string",
@@ -38,7 +38,7 @@ API REST para gestión de finanzas compartidas de una pareja. Permite registrar 
     "email": "string"
   },
   "monthlyBudget": 0,
-  "currency": "$",
+  "currency": "COP",
   "locale": "es_ES",
   "createdAt": "ISO 8601",
   "updatedAt": "ISO 8601"
@@ -48,7 +48,7 @@ API REST para gestión de finanzas compartidas de una pareja. Permite registrar 
 ### Modelo de Gasto
 ```json
 {
-  "PK": "PAREJA#DEFAULT",
+  "PK": "PAREJA#{coupleId}",
   "SK": "GASTO#{gastoId}",
   "gastoId": "string (UUID)",
   "title": "string (concepto)",
@@ -57,7 +57,8 @@ API REST para gestión de finanzas compartidas de una pareja. Permite registrar 
   "category": "subscriptions|groceries|transport|dateNights|home|health|vacations|gifts|pets|hobbies|savings|others",
   "monthYear": "YYYY-MM",
   "note": "string (opcional)",
-  "createdBy": "email del usuario",
+  "createdBy": "sub de Cognito",
+  "createdByEmail": "email verificado del JWT",
   "createdAt": "ISO 8601",
   "updatedAt": "ISO 8601"
 }
@@ -66,7 +67,7 @@ API REST para gestión de finanzas compartidas de una pareja. Permite registrar 
 ### Modelo de Presupuesto Mensual
 ```json
 {
-  "PK": "PAREJA#DEFAULT",
+  "PK": "PAREJA#{coupleId}",
   "SK": "PRESUPUESTO#{monthYear}",
   "monthYear": "YYYY-MM",
   "amount": 0.00,
@@ -79,7 +80,7 @@ API REST para gestión de finanzas compartidas de una pareja. Permite registrar 
 ### Modelo de Histórico Mensual
 ```json
 {
-  "PK": "PAREJA#DEFAULT",
+  "PK": "PAREJA#{coupleId}",
   "SK": "HISTORICO#{monthYear}",
   "monthYear": "YYYY-MM",
   "totalSpent": 0.00,
@@ -134,8 +135,10 @@ Content-Type: application/json
 **Response (201):**
 ```json
 {
+  "coupleId": "identificador interno",
   "user1": { "email": "user1@example.com", "name": "Juan" },
   "user2": { "email": "user2@example.com", "name": "María" },
+  "currency": "COP",
   "createdAt": "2026-07-23T10:00:00+00:00"
 }
 ```
@@ -152,12 +155,12 @@ GET /finances
 **Response (200):**
 ```json
 {
-  "PK": "PAREJA#DEFAULT",
+  "PK": "PAREJA#{coupleId}",
   "SK": "META",
   "user1": { "name": "Juan", "email": "user1@example.com" },
   "user2": { "name": "María", "email": "user2@example.com" },
   "monthlyBudget": 0,
-  "currency": "$",
+  "currency": "COP",
   "locale": "es_ES",
   "createdAt": "2026-07-23T10:00:00+00:00",
   "updatedAt": "2026-07-23T10:00:00+00:00"
@@ -218,7 +221,7 @@ GET /finances/gastos?month=2026-07&category=groceries
 {
   "expenses": [
     {
-      "PK": "PAREJA#DEFAULT",
+      "PK": "PAREJA#{coupleId}",
       "SK": "GASTO#uuid",
       "gastoId": "uuid",
       "title": "Spotify Duo",
@@ -227,7 +230,8 @@ GET /finances/gastos?month=2026-07&category=groceries
       "category": "subscriptions",
       "monthYear": "2026-07",
       "note": "Pago mensual",
-      "createdBy": "user1@example.com",
+      "createdBy": "cognito-sub",
+      "createdByEmail": "user1@example.com",
       "createdAt": "2026-07-21T15:30:00+00:00",
       "updatedAt": "2026-07-21T15:30:00+00:00"
     }
@@ -245,8 +249,7 @@ Content-Type: application/json
   "amount": 45.90,
   "date": "2026-07-20T20:00:00+00:00",
   "category": "dateNights",
-  "note": "Restaurante italiano",
-  "createdBy": "user1@example.com"
+  "note": "Restaurante italiano"
 }
 ```
 
@@ -320,7 +323,7 @@ GET /finances/presupuesto/{monthYear}
 **Response (200):**
 ```json
 {
-  "PK": "PAREJA#DEFAULT",
+  "PK": "PAREJA#{coupleId}",
   "SK": "PRESUPUESTO#2026-07",
   "monthYear": "2026-07",
   "amount": 300.00,
@@ -468,12 +471,13 @@ Todas las respuestas de error incluyen estructura consistente:
 Cada operación registra:
 - **createdAt**: Timestamp de creación (ISO 8601)
 - **updatedAt**: Timestamp de última actualización
-- **createdBy**: Email del usuario que realizó la acción
+- **createdBy**: `sub` de Cognito del usuario autenticado
+- **createdByEmail**: correo verificado obtenido del JWT
 - **modifiedBy**: Email del usuario que realizó la última modificación (futuro)
 
 ### 4. Filtrado Avanzado
 ```http
-GET /finances/{parejaId}/gastos?month=2026-07&category=dateNights
+GET /finances/gastos?month=2026-07&category=dateNights
 ```
 Retorna solo gastos de "Citas y salidas" en julio 2026.
 
@@ -491,7 +495,7 @@ Cuando se agrega/actualiza un gasto que causa que se exceda el presupuesto mensu
 **Modo de Facturación:** `PAY_PER_REQUEST` (sin costo si no se usa)
 
 ### Clave Primaria
-- **PK (HASH):** `PAREJA#DEFAULT` (fija, siempre igual)
+- **PK (HASH):** `PAREJA#{coupleId}` para datos financieros; `USUARIO#{sub}` y `EMAIL#{email}` para membresías.
 - **SK (RANGE):** `META|GASTO#{id}|PRESUPUESTO#{monthYear}|HISTORICO#{monthYear}`
 
 ### Índices Globales Secundarios (GSI)
@@ -512,7 +516,8 @@ Cuando se agrega/actualiza un gasto que causa que se exceda el presupuesto mensu
 
 ```bash
 # 1. Crear pareja
-curl -X POST https://api.example.com/finances \
+curl -X POST https://api.example.com/finances/init \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "user1Email": "juan@example.com",
@@ -530,23 +535,25 @@ curl -X POST https://api.example.com/finances \
 }
 
 # 2. Establecer presupuesto para este mes
-curl -X POST https://api.example.com/finances/abc-123/presupuesto/2026-07 \
+curl -X POST https://api.example.com/finances/presupuesto/2026-07 \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{ "amount": 300 }'
 
 # 3. Agregar primer gasto
-curl -X POST https://api.example.com/finances/abc-123/gastos \
+curl -X POST https://api.example.com/finances/gastos \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Spotify Duo",
     "amount": 14.99,
     "date": "2026-07-23T10:00:00+00:00",
-    "category": "subscriptions",
-    "createdBy": "juan@example.com"
+    "category": "subscriptions"
   }'
 
 # 4. Obtener resumen
-curl -X GET https://api.example.com/finances/abc-123/resumen
+curl -X GET https://api.example.com/finances/resumen \
+  -H "Authorization: Bearer $TOKEN"
 
 # Response:
 {
@@ -560,7 +567,8 @@ curl -X GET https://api.example.com/finances/abc-123/resumen
 }
 
 # 5. Obtener histórico del mes
-curl -X GET https://api.example.com/finances/abc-123/historico/2026-07
+curl -X GET https://api.example.com/finances/historico/2026-07 \
+  -H "Authorization: Bearer $TOKEN"
 
 # Response:
 {
