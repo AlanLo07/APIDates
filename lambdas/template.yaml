@@ -75,6 +75,8 @@ Globals:
         FINANCES_TABLE_NAME: !Ref FinancesTable
         CHECKLISTS_TABLE_NAME: !Ref ChecklistsTable
         COUPONS_TABLE_NAME: !Ref CouponsTable
+        MONTHLY_CHALLENGES_TABLE_NAME: !Ref MonthlyChallengesTable
+        MONTHLY_CHALLENGES_CATALOG_TABLE_NAME: !Ref MonthlyChallengesCatalogTable
         POWERTOOLS_LOG_LEVEL: INFO
     Layers:
       - !Ref CommonLayer
@@ -1137,6 +1139,147 @@ Resources:
             Schedule: "cron(0 0 1 1,7 ? *)"
             Enabled: false
 
+  # ── Lambda: Monthly Challenges CRUD (retos mensuales de pareja) ───────────
+  MonthlyChallengesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: monthly-challenges-crud
+      CodeUri: functions/MonthlyChallengesCRUD/
+      Handler: handler.lambda_handler
+      Description: "Retos mensuales compartidos por una pareja (independiente de los retos eroticos)"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MonthlyChallengesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref MonthlyChallengesCatalogTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:TransactWriteItems
+              Resource: !GetAtt MonthlyChallengesTable.Arn
+      Events:
+        InitCouple:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/init
+        GetCurrentMonth:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /monthly-challenges/current
+        GetMonthStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /monthly-challenges/{monthKey}
+        CreateOrUpdateProposal:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/current/proposals
+        WithdrawProposal:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /monthly-challenges/current/proposals
+        RegisterChoice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/current/choice
+        EditActiveChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /monthly-challenges/current/active
+        CancelActiveChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/current/cancel
+        ReplaceActiveChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/current/replace
+        CompleteActiveChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/current/complete
+        GetCurrentCoupon:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /monthly-challenges/current/coupon
+        AddFavorite:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/favorites
+        ListFavorites:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /monthly-challenges/favorites
+        RemoveFavorite:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /monthly-challenges/favorites/{favoriteId}
+        CreateCatalogChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /monthly-challenges/catalog
+        ListCatalogChallenges:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /monthly-challenges/catalog
+        GetRandomCatalogSuggestion:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /monthly-challenges/catalog/random
+        GetCatalogChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /monthly-challenges/catalog/{challengeId}
+        UpdateCatalogChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /monthly-challenges/catalog/{challengeId}
+        DeactivateCatalogChallenge:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /monthly-challenges/catalog/{challengeId}
+
   # ── Lambda: Checklists CRUD ────────────────────────────────────────────────
   ChecklistsFunction:
     Type: AWS::Serverless::Function
@@ -1538,6 +1681,63 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  # ── DynamoDB: Tabla MonthlyChallenges (estado por pareja, PK/SK compuesta) ─
+  MonthlyChallengesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: MonthlyChallengesTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
+  # ── DynamoDB: Tabla MonthlyChallengesCatalog (catalogo compartido de retos) ─
+  MonthlyChallengesCatalogTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: MonthlyChallengesCatalogTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: category-index
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ApiUrl:
@@ -1633,3 +1833,15 @@ Outputs:
   CouponsEndpoint:
     Description: "Endpoint base de cuponeras"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/cuponera"
+
+  MonthlyChallengesTableName:
+    Description: "Nombre de la tabla de estado de retos mensuales"
+    Value: !Ref MonthlyChallengesTable
+
+  MonthlyChallengesCatalogTableName:
+    Description: "Nombre de la tabla de catalogo de retos mensuales"
+    Value: !Ref MonthlyChallengesCatalogTable
+
+  MonthlyChallengesEndpoint:
+    Description: "Endpoint base de retos mensuales de pareja"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/monthly-challenges"
