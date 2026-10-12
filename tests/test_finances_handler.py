@@ -3,9 +3,12 @@ import json
 import os
 import sys
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
+
+from botocore.exceptions import ClientError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -167,6 +170,345 @@ class FinancesHandlerTests(unittest.TestCase):
     def test_budget_month_requires_yyyy_mm(self):
         errors = self.handler.validate_budget({"monthYear": "2026-13", "amount": 10})
         self.assertIn("monthYear debe tener formato YYYY-MM", errors)
+
+    def _savings_state(self, accumulated="0", cushion="0", order=None, version=1):
+        goal_id = "goal-home"
+        order = [goal_id] if order is None else order
+        config = {"goalOrder": order, "version": version, "currency": "COP"}
+        goals = {
+            goal_id: {
+                "goalId": goal_id,
+                "name": "Casa",
+                "targetAmount": Decimal("100"),
+                "accumulatedAmount": Decimal(accumulated),
+                "status": "pending",
+                "createdAt": "2026-10-01T00:00:00+00:00",
+                "updatedAt": "2026-10-01T00:00:00+00:00",
+            }
+        } if goal_id in order else {}
+        cushion_item = {
+            "goalId": "COLCHON",
+            "name": "Colchón",
+            "accumulatedAmount": Decimal(cushion),
+            "status": "cushion",
+        }
+        return config, goals, cushion_item
+
+    def _capture_savings_builder(self):
+        captured = {}
+
+        def run_builder(_couple_pk, _key_hash, _request_hash, builder):
+            actions, result, status = builder()
+            captured["actions"] = actions
+            return result, status, False
+
+        return captured, run_builder
+
+    def _contribution(self, amount, state, note=None):
+        captured, run_builder = self._capture_savings_builder()
+        user = {"sub": "user-1", "email": "uno@example.com"}
+        with (
+            patch.object(self.handler, "_read_savings_state", return_value=state),
+            patch.object(self.handler, "_run_idempotent_transaction", side_effect=run_builder),
+            patch.object(self.handler, "get_savings_summary", return_value={"cushion": {"balance": 0}}),
+        ):
+            response, status = self.handler.register_savings_contribution(
+                "PAREJA#couple-1",
+                user,
+                {"amount": amount, "note": note, "date": "2026-10-08T12:00:00Z"},
+                "request-key-hash",
+            )
+        return response, status, captured["actions"]
+
+    def test_partial_contribution_stays_on_active_goal(self):
+        response, status, actions = self._contribution(Decimal("40"), self._savings_state())
+
+        self.assertEqual(status, 201)
+        self.assertEqual(response["allocatedToGoal"], Decimal("40"))
+        self.assertEqual(response["sentToCushion"], Decimal("0"))
+        self.assertIsNone(response["completedGoal"])
+        self.assertEqual(response["activeGoalId"], "goal-home")
+        self.assertEqual(len(actions), 4)
+
+    def test_exact_contribution_completes_goal_and_activates_next(self):
+        config, goals, cushion = self._savings_state(accumulated="60")
+        config["goalOrder"] = ["goal-home", "goal-car"]
+        goals["goal-car"] = {
+            **goals["goal-home"],
+            "goalId": "goal-car",
+            "name": "Carro",
+            "targetAmount": Decimal("200"),
+            "accumulatedAmount": Decimal("0"),
+        }
+
+        response, _, actions = self._contribution(Decimal("40"), (config, goals, cushion))
+
+        self.assertEqual(response["completedGoal"]["goalId"], "goal-home")
+        self.assertEqual(response["activeGoalId"], "goal-car")
+        self.assertEqual(response["sentToCushion"], Decimal("0"))
+        config_action = actions[0]["Update"]
+        self.assertEqual(config_action["ExpressionAttributeValues"][":goalOrder"], ["goal-car"])
+
+    def test_excess_goes_directly_to_cushion_with_source_reference_and_note(self):
+        response, _, actions = self._contribution(Decimal("50"), self._savings_state(accumulated="95"), "Bono")
+
+        self.assertEqual(response["allocatedToGoal"], Decimal("5"))
+        self.assertEqual(response["sentToCushion"], Decimal("45"))
+        self.assertIsNone(response["activeGoalId"])
+        movements = [action["Put"]["Item"] for action in actions if "Put" in action and action["Put"]["Item"].get("movementId")]
+        self.assertEqual(len(movements), 2)
+        surplus = movements[1]
+        self.assertEqual(surplus["automaticReference"], "Sobrante de: Casa")
+        self.assertEqual(surplus["note"], "Bono")
+        self.assertEqual(surplus["sourceGoalId"], "goal-home")
+        self.assertEqual(sum((item["amount"] for item in movements), Decimal("0")), Decimal("50"))
+
+    def test_contribution_without_pending_goals_goes_to_cushion_without_surplus_reference(self):
+        config, goals, cushion = self._savings_state(order=[])
+        response, _, actions = self._contribution(Decimal("25"), (config, goals, cushion))
+
+        self.assertEqual(response["allocatedToGoal"], Decimal("0"))
+        self.assertEqual(response["sentToCushion"], Decimal("25"))
+        movements = [action["Put"]["Item"] for action in actions if "Put" in action and action["Put"]["Item"].get("movementId")]
+        self.assertEqual(len(movements), 1)
+        self.assertEqual(movements[0]["movementType"], "cushion_contribution")
+        self.assertNotIn("automaticReference", movements[0])
+
+    def test_valid_cushion_withdrawal_records_resulting_balance(self):
+        captured, run_builder = self._capture_savings_builder()
+        user = {"sub": "user-1", "email": "uno@example.com"}
+        config, goals, cushion = self._savings_state(order=[], cushion="80")
+        with (
+            patch.object(self.handler, "_read_savings_state", return_value=(config, goals, cushion)),
+            patch.object(self.handler, "_run_idempotent_transaction", side_effect=run_builder),
+            patch.object(self.handler, "get_savings_summary", return_value={"cushion": {"balance": 30}}),
+        ):
+            result, status = self.handler.withdraw_from_cushion(
+                "PAREJA#couple-1",
+                user,
+                {"amount": 50, "note": "Emergencia", "date": "2026-10-08T12:00:00Z"},
+                "request-key-hash",
+            )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(result["balanceAfter"], Decimal("30"))
+        self.assertEqual(captured["actions"][1]["Update"]["ExpressionAttributeValues"][":newBalance"], Decimal("30"))
+
+    def test_withdrawal_over_cushion_balance_is_rejected(self):
+        config, goals, cushion = self._savings_state(order=[], cushion="20")
+        captured, run_builder = self._capture_savings_builder()
+        user = {"sub": "user-1", "email": "uno@example.com"}
+        with (
+            patch.object(self.handler, "_read_savings_state", return_value=(config, goals, cushion)),
+            patch.object(self.handler, "_run_idempotent_transaction", side_effect=run_builder),
+        ):
+            with self.assertRaises(self.handler.SavingsError) as error:
+                self.handler.withdraw_from_cushion(
+                    "PAREJA#couple-1",
+                    user,
+                    {"amount": 21, "note": "Emergencia", "date": "2026-10-08T12:00:00Z"},
+                    "request-key-hash",
+                )
+
+        self.assertEqual(error.exception.status_code, 422)
+        self.assertNotIn("actions", captured)
+
+    def test_normal_goal_cannot_be_archived_as_cushion(self):
+        with self.assertRaises(self.handler.SavingsError) as error:
+            self.handler.archive_savings_goal("PAREJA#couple-1", "COLCHON")
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_cushion_and_config_are_created_automatically_once(self):
+        self.table.get_item.side_effect = [
+            {"Item": {"PK": "PAREJA#couple-1", "SK": "META", "currency": "COP"}},
+            {},
+            {},
+            {"Item": {"goalOrder": [], "version": 0, "currency": "COP"}},
+            {"Item": {"goalId": "COLCHON", "name": "Colchón", "accumulatedAmount": Decimal("0")}},
+        ]
+        self.table.query.return_value = {"Items": []}
+        with (
+            patch.object(self.handler, "query_all", return_value=[]),
+            patch.object(self.handler, "_latest_savings_movements", return_value=[]),
+        ):
+            result = self.handler.get_savings_summary("PAREJA#couple-1")
+
+        self.assertEqual(result["currency"], "COP")
+        self.assertEqual(result["cushion"]["goalId"], "COLCHON")
+        self.assertEqual(self.table.put_item.call_count, 2)
+
+    def test_cushion_cannot_be_edited_archived_or_reordered(self):
+        config, goals, cushion = self._savings_state(order=[])
+        with (
+            patch.object(self.handler, "_read_savings_state", return_value=(config, goals, cushion)),
+            self.assertRaises(self.handler.SavingsError),
+        ):
+            self.handler.update_savings_goal("PAREJA#couple-1", "COLCHON", {"name": "Fondo"})
+
+        with self.assertRaises(self.handler.SavingsError):
+            self.handler.archive_savings_goal("PAREJA#couple-1", "COLCHON")
+
+        with patch.object(self.handler, "_read_savings_state", return_value=(config, goals, cushion)):
+            with self.assertRaises(self.handler.SavingsError):
+                self.handler.reorder_savings_goals("PAREJA#couple-1", ["COLCHON"])
+
+    def test_withdrawal_cannot_target_a_normal_goal(self):
+        with self.assertRaises(self.handler.SavingsError) as error:
+            self.handler.withdraw_from_cushion(
+                "PAREJA#couple-1",
+                {"sub": "user-1", "email": "uno@example.com"},
+                {
+                    "amount": 1,
+                    "note": "Motivo",
+                    "date": "2026-10-08T12:00:00Z",
+                    "goalId": "goal-home",
+                },
+                "request-key-hash",
+            )
+        self.assertEqual(error.exception.status_code, 400)
+
+    def test_editing_target_to_accumulated_balance_completes_goal(self):
+        config, goals, cushion = self._savings_state(accumulated="100")
+        captured = {}
+
+        def execute(actions):
+            captured["actions"] = actions
+
+        with (
+            patch.object(self.handler, "_read_savings_state", return_value=(config, goals, cushion)),
+            patch.object(self.handler, "_execute_savings_transaction", side_effect=execute),
+            patch.object(self.handler, "get_savings_summary", return_value={"activeGoal": None}),
+        ):
+            result, status = self.handler.update_savings_goal(
+                "PAREJA#couple-1",
+                "goal-home",
+                {"targetAmount": 100},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["goal"]["status"], "completed")
+        self.assertEqual(captured["actions"][0]["Update"]["ExpressionAttributeValues"][":goalOrder"], [])
+        self.assertIn(":completed", captured["actions"][1]["Update"]["ExpressionAttributeValues"])
+
+    def test_reorder_changes_only_config_and_rejects_duplicates(self):
+        config, goals, cushion = self._savings_state()
+        config["goalOrder"] = ["goal-home", "goal-car"]
+        goals["goal-car"] = {
+            **goals["goal-home"],
+            "goalId": "goal-car",
+            "name": "Carro",
+        }
+        captured = {}
+
+        def execute(actions):
+            captured["actions"] = actions
+
+        with (
+            patch.object(self.handler, "_read_savings_state", return_value=(config, goals, cushion)),
+            patch.object(self.handler, "_execute_savings_transaction", side_effect=execute),
+            patch.object(self.handler, "get_savings_summary", return_value={"activeGoal": {"goalId": "goal-car"}}),
+        ):
+            result, status = self.handler.reorder_savings_goals("PAREJA#couple-1", ["goal-car", "goal-home"])
+            with self.assertRaises(self.handler.SavingsError):
+                self.handler.reorder_savings_goals("PAREJA#couple-1", ["goal-car", "goal-car"])
+
+        self.assertEqual(status, 200)
+        self.assertEqual(result["activeGoal"]["goalId"], "goal-car")
+        self.assertEqual(len(captured["actions"]), 1)
+        self.assertEqual(captured["actions"][0]["Update"]["Key"]["SK"], "AHORROS#CONFIG")
+
+    def test_wedding_budget_link_is_reserved_atomically(self):
+        config, goals, cushion = self._savings_state(order=[])
+        captured, run_builder = self._capture_savings_builder()
+        self.table.get_item.return_value = {}
+        user = {"sub": "user-1", "email": "uno@example.com"}
+        with (
+            patch.object(self.handler, "_read_savings_state", return_value=(config, goals, cushion)),
+            patch.object(self.handler, "_run_idempotent_transaction", side_effect=run_builder),
+            patch.object(self.handler, "get_savings_summary", return_value={"currency": "COP"}),
+        ):
+            result, status = self.handler.create_savings_goal(
+                "PAREJA#couple-1",
+                user,
+                {"name": "Boda", "targetAmount": 1000, "bodaId": "wedding-1"},
+                "request-key-hash",
+            )
+
+        self.assertEqual(status, 201)
+        self.assertTrue(result["goal"]["isLinkedToWeddingBudget"])
+        link_items = [action["Put"]["Item"] for action in captured["actions"] if "Put" in action and action["Put"]["Item"].get("SK", "").startswith("VINCULO_BODA#")]
+        self.assertEqual(link_items[0]["SK"], "VINCULO_BODA#wedding-1")
+
+    def test_concurrent_contributions_retry_against_latest_balance(self):
+        initial_state = self._savings_state(accumulated="0", version=1)
+        concurrently_updated_state = self._savings_state(accumulated="40", version=2)
+        user = {"sub": "user-1", "email": "uno@example.com"}
+        cancellation = ClientError(
+            {"Error": {"Code": "TransactionCanceledException", "Message": "conflict"}},
+            "TransactWriteItems",
+        )
+        states = [initial_state, concurrently_updated_state]
+        actions_seen = []
+
+        def build_and_capture(_couple_pk, _key_hash, _request_hash, builder):
+            actions, result, status = builder()
+            actions_seen.append(actions)
+            return result, status, False
+
+        with (
+            patch.object(self.handler, "_get_idempotency_record", side_effect=[None, None]),
+            patch.object(self.handler, "_read_savings_state", side_effect=states),
+            patch.object(self.handler, "_execute_savings_transaction", side_effect=[cancellation, None]),
+            patch.object(self.handler, "get_savings_summary", return_value={"activeGoal": {"goalId": "goal-home"}}),
+        ):
+            result, status = self.handler.register_savings_contribution(
+                "PAREJA#couple-1",
+                user,
+                {"amount": 40, "date": "2026-10-08T12:00:00Z"},
+                "request-key-hash",
+            )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(len(actions_seen), 2)
+        self.assertEqual(result["goalBalance"], Decimal("80"))
+        self.assertEqual(actions_seen[1][0]["Update"]["ExpressionAttributeValues"][":expectedVersion"], 2)
+
+    def test_idempotency_key_replays_same_request(self):
+        self.table.get_item.return_value = {
+            "Item": {
+                "requestHash": "payload-hash",
+                "statusCode": 201,
+                "result": {"operationId": "operation-1"},
+            }
+        }
+        builder = MagicMock(side_effect=AssertionError("builder must not run on replay"))
+
+        result, status, replay = self.handler._run_idempotent_transaction(
+            "PAREJA#couple-1",
+            "idempotency-hash",
+            "payload-hash",
+            builder,
+        )
+
+        self.assertEqual(result["operationId"], "operation-1")
+        self.assertEqual(status, 200)
+        self.assertTrue(replay)
+        builder.assert_not_called()
+
+    def test_idempotency_key_cannot_be_reused_with_different_payload(self):
+        self.table.get_item.return_value = {
+            "Item": {"requestHash": "original-hash", "result": {}}
+        }
+
+        with self.assertRaises(self.handler.SavingsError) as error:
+            self.handler._run_idempotent_transaction(
+                "PAREJA#couple-1",
+                "idempotency-hash",
+                "different-hash",
+                MagicMock(),
+            )
+
+        self.assertEqual(error.exception.status_code, 409)
 
 
 if __name__ == "__main__":

@@ -929,6 +929,12 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref FinancesTable
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:TransactWriteItems
+              Resource: !GetAtt FinancesTable.Arn
       Events:
         InitCouple:
           Type: HttpApi
@@ -948,6 +954,54 @@ Resources:
             ApiId: !Ref CitasApi
             Method: GET
             Path: /finances/resumen
+        GetSavingsSummary:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/metas
+        CreateSavingsGoal:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /finances/metas
+        UpdateSavingsGoal:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PATCH
+            Path: /finances/metas/{goalId}
+        ArchiveSavingsGoal:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /finances/metas/{goalId}
+        ReorderSavingsGoals:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /finances/metas/reordenar
+        CreateSavingsContribution:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /finances/ahorros/aportes
+        CreateCushionWithdrawal:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /finances/ahorros/retiros
+        GetSavingsHistory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /finances/ahorros/historial
         ListExpenses:
           Type: HttpApi
           Properties:

@@ -398,6 +398,172 @@ GET /finances/historico?limit=12
 
 ---
 
+## 🎯 Metas de ahorro compartidas
+
+Todas las rutas requieren `Authorization: Bearer <Cognito JWT>`. La pareja se obtiene de la membresía asociada al usuario autenticado; el cliente no envía `coupleId` ni el usuario responsable. Las dos personas comparten la misma cola, saldos e historial.
+
+### Consultar el tablero
+
+```http
+GET /finances/metas
+```
+
+Inicializa automáticamente la configuración y la meta `Colchón` si faltan. El identificador reservado del colchón es `COLCHON`; no se puede editar, reordenar, archivar ni borrar.
+
+La respuesta incluye `currency`, `totalSaved`, `activeGoal`, `activeGoalRemainingAmount`, `activeGoalMissingPercent`, `waitingGoals`, `completedGoals`, `archivedGoals`, `cushion`, `cascade`, `latestMovements` y `configVersion`. Los porcentajes van de `0` a `100`. Las metas pendientes se priorizan mediante el orden de `goalOrder`; la primera es la activa.
+
+```json
+{
+  "currency": "COP",
+  "totalSaved": 125000,
+  "activeGoal": {
+    "goalId": "goal-uuid",
+    "name": "Casa",
+    "targetAmount": 500000,
+    "accumulatedAmount": 125000,
+    "remainingAmount": 375000,
+    "progressPercent": 25,
+    "priority": 1,
+    "status": "active",
+    "isLinkedToWeddingBudget": false
+  },
+  "activeGoalRemainingAmount": 375000,
+  "activeGoalMissingPercent": 75,
+  "waitingGoals": [],
+  "completedGoals": [],
+  "archivedGoals": [],
+  "cushion": {
+    "goalId": "COLCHON",
+    "name": "Colchón",
+    "balance": 0,
+    "status": "cushion",
+    "isArchivable": false,
+    "isReorderable": false
+  },
+  "cascade": {
+    "targetAmount": 500000,
+    "accumulatedAmount": 125000,
+    "progressPercent": 25,
+    "segments": []
+  },
+  "latestMovements": [],
+  "configVersion": 3
+}
+```
+
+### Crear meta
+
+```http
+POST /finances/metas
+Idempotency-Key: <UUID único por solicitud>
+Content-Type: application/json
+
+{
+  "name": "Casa",
+  "targetAmount": 500000,
+  "priority": 1,
+  "bodaId": null
+}
+```
+
+`name` es obligatorio (1-100 caracteres); `targetAmount` debe ser positivo. `priority` es opcional y se inserta en esa posición; por defecto se agrega al final. `bodaId` es opcional y reserva ese presupuesto para una sola meta pendiente. Responde `201` con `goal`, `goalId` y `summary`.
+
+### Editar meta pendiente
+
+```http
+PATCH /finances/metas/{goalId}
+Content-Type: application/json
+
+{
+  "name": "Casa nueva",
+  "targetAmount": 600000,
+  "bodaId": "boda-uuid"
+}
+```
+
+Solo acepta `name`, `targetAmount` y `bodaId`. El objetivo no puede ser menor al acumulado. Si queda exactamente igual al acumulado, la meta se completa y sale de la cola automáticamente. Para quitar el vínculo, enviar `"bodaId": null`. Responde `200` con `goal`, `completedGoal` (si se completó) y `summary`.
+
+### Reordenar metas pendientes
+
+```http
+POST /finances/metas/reordenar
+Content-Type: application/json
+
+{
+  "goalIds": ["goal-uuid-2", "goal-uuid-1"]
+}
+```
+
+La lista debe incluir, sin duplicados, todas y solo las metas pendientes. No se incluyen metas completadas, archivadas ni `COLCHON`. El cambio solo afecta aportes futuros; no reescribe movimientos anteriores. Responde `200` con el tablero actualizado.
+
+### Archivar meta
+
+```http
+DELETE /finances/metas/{goalId}
+```
+
+Archiva sin borrar los movimientos. Se permite para metas normales pendientes o completadas; el colchón responde `409`. Responde `200` con `goalId`, `status: "archived"` y `summary`.
+
+### Registrar aporte
+
+```http
+POST /finances/ahorros/aportes
+Idempotency-Key: <UUID único por solicitud>
+Content-Type: application/json
+
+{
+  "amount": 50000,
+  "note": "Aporte de octubre",
+  "date": "2026-10-08T12:00:00-05:00"
+}
+```
+
+`amount` debe ser positivo; `date` debe ser ISO 8601 con zona horaria. El cliente no elige meta ni usuario. El backend asigna el monto a la meta activa. Si la completa, el excedente pasa directamente al colchón con `automaticReference: "Sobrante de: {nombreMeta}"` y conserva la nota original. Sin metas pendientes, todo va al colchón sin referencia de sobrante.
+
+La respuesta `201` contiene `operationId`, `allocatedToGoal`, `sentToCushion`, `completedGoal`, `activeGoalId`, `goalBalance`, `cushionBalance`, `currency` y `summary`. Si se completó una meta, incluye `celebration` para la UI. Una repetición con la misma clave y payload no vuelve a aplicar el movimiento; devuelve `idempotentReplay: true`. Reutilizar la clave con otro payload responde `409`.
+
+### Retirar del colchón
+
+```http
+POST /finances/ahorros/retiros
+Idempotency-Key: <UUID único por solicitud>
+Content-Type: application/json
+
+{
+  "amount": 20000,
+  "note": "Gasto médico imprevisto",
+  "date": "2026-10-08T12:00:00-05:00"
+}
+```
+
+El motivo (`note`) es obligatorio. Los retiros solo modifican el colchón y fallan con `422` si superan el saldo. La respuesta incluye `balanceBefore`, `balanceAfter`, `cushionBalance` y `summary`. No enviar `goalId` ni una meta destino.
+
+### Consultar movimientos
+
+```http
+GET /finances/ahorros/historial
+GET /finances/ahorros/historial?goalId=goal-uuid
+GET /finances/ahorros/historial?cushion=true
+GET /finances/ahorros/historial?from=2026-10-01&to=2026-10-31
+GET /finances/ahorros/historial?limit=25&cursor=<nextCursor>
+```
+
+Filtros combinables: `goalId`, `cushion=true`, `from`, `to`, `limit` (1-100) y `cursor`. Para metas, el historial incluye sobrantes enviados al colchón desde esa meta. La respuesta contiene `items`, `count`, `limit`, `nextCursor` y `sort: "date_desc"`.
+
+Cada movimiento informa `movementId`, `operationId`, `movementType`, `amount`, `balanceAfter`, `goalId`, `goalName`, `note`, `automaticReference` cuando aplique, `sourceGoalId` para sobrantes, `userId`, `userEmail` y `date`.
+
+### Consistencia y errores de metas
+
+- Cada aporte, retiro y reordenamiento actualiza la versión de configuración mediante una transacción DynamoDB; un conflicto simultáneo se recalcula y reintenta hasta cinco veces.
+- La operación, sus movimientos, saldos e idempotencia se escriben en la misma transacción. No quedan aportes parcialmente aplicados.
+- `400`: monto/campos/orden/fecha inválidos o falta `Idempotency-Key`.
+- `401`/`403`: token ausente/inválido o usuario no miembro de la pareja.
+- `404`: meta inexistente.
+- `409`: colchón inmutable, conflicto concurrente, meta ya no editable o clave de idempotencia reutilizada con otro contenido.
+- `422`: retiro mayor al saldo del colchón.
+
+---
+
 ## 🔐 Códigos de Estado HTTP
 
 | Código | Significado | Caso de Uso |
@@ -405,7 +571,11 @@ GET /finances/historico?limit=12
 | **200** | OK | Operación exitosa (GET, PUT) |
 | **201** | Created | Recurso creado exitosamente (POST) |
 | **400** | Bad Request | Datos inválidos o campos faltantes |
+| **401** | Unauthorized | Token Cognito ausente o inválido |
+| **403** | Forbidden | Usuario autenticado sin membresía en la pareja |
 | **404** | Not Found | Pareja, gasto o presupuesto no encontrado |
+| **409** | Conflict | Colisión de idempotencia, meta inmutable o conflicto concurrente |
+| **422** | Unprocessable Entity | Retiro superior al saldo del colchón |
 | **500** | Internal Server Error | Error del servidor (raro, logging activado) |
 
 ---
@@ -528,7 +698,7 @@ curl -X POST https://api.example.com/finances/init \
 
 # Response:
 {
-  "parejaId": "abc-123",
+  "coupleId": "abc-123",
   "user1": { "email": "juan@example.com", "name": "Juan" },
   "user2": { "email": "maria@example.com", "name": "María" },
   "createdAt": "2026-07-23T10:00:00+00:00"
@@ -557,7 +727,6 @@ curl -X GET https://api.example.com/finances/resumen \
 
 # Response:
 {
-  "parejaId": "abc-123",
   "couple": { /* datos de pareja */ },
   "totalSpent": 14.99,
   "weeklySpent": 14.99,
