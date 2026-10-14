@@ -79,6 +79,19 @@ class FinancesHandlerTests(unittest.TestCase):
         self.assertEqual(promoted_item["PK"], "USUARIO#user-1")
         self.assertEqual(promoted_item["coupleId"], "couple-1")
 
+    def test_access_token_without_email_uses_user_membership(self):
+        self.table.get_item.return_value = {
+            "Item": {"coupleId": "couple-1", "email": "uno@example.com"}
+        }
+        request = event()
+        del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
+
+        couple_pk, user = self.handler._resolve_couple_context(request)
+
+        self.assertEqual(couple_pk, "PAREJA#couple-1")
+        self.assertEqual(user["sub"], "user-1")
+        self.assertEqual(user["email"], "uno@example.com")
+
     def test_init_is_atomic_and_uses_cop(self):
         user = {"sub": "user-1", "email": "uno@example.com", "name": "Uno"}
 

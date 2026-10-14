@@ -190,7 +190,7 @@ def _get_request_user(event):
     )
     user_id = str(claims.get("sub") or "").strip()
     email = _normalize_email(claims.get("email"))
-    if not user_id or not email:
+    if not user_id:
         raise UnauthenticatedError("Usuario no autenticado")
     return {
         "sub": user_id,
@@ -229,6 +229,9 @@ def _resolve_couple_context(event):
         ConsistentRead=True,
     ).get("Item")
     if user_membership:
+        user["email"] = user["email"] or _normalize_email(user_membership.get("email"))
+        if not user["email"]:
+            raise ForbiddenError("La membresía del usuario no tiene un correo asociado")
         return f"PAREJA#{user_membership['coupleId']}", user
 
     email_membership = table.get_item(

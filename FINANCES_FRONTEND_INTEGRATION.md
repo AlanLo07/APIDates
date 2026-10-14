@@ -1,5 +1,7 @@
 # 🔗 Integración Frontend-Backend: Finanzas de Parejas
 
+Las operaciones de una pareja ya inicializada aceptan el access token aunque no incluya `email`: el backend obtiene ese dato de la membresía vinculada al `sub`. Para `POST /finances/init`, usar un token que sí incluya el claim `email`.
+
 ## 📡 Cómo Conectar Flutter con la API
 
 Este documento explica cómo modificar tu pantalla `CoupleFinancesScreen` para usar el backend real en lugar de datos mock.

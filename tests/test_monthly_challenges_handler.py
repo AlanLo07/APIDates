@@ -296,6 +296,16 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         )
         self.assertEqual(state["proposals"], [])
 
+    def test_access_token_without_email_uses_user_membership(self):
+        request = make_event("/monthly-challenges/current", sub=self.user1["sub"], email=self.user1["email"])
+        del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
+
+        couple_pk, user = self.handler._resolve_couple_context(request)
+
+        self.assertEqual(couple_pk, self.couple_pk)
+        self.assertEqual(user["sub"], self.user1["sub"])
+        self.assertEqual(user["email"], self.user1["email"])
+
     # ── Propuestas simultáneas y silencio != consentimiento ───────────────
 
     def test_simultaneous_proposals_are_recorded_independently(self):
