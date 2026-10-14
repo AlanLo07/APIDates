@@ -52,6 +52,7 @@ logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
 dynamodb_client = cast(Any, dynamodb.meta).client
+cognito = boto3.client("cognito-idp")
 TABLE_NAME = os.environ.get("FINANCES_TABLE_NAME", "FinancesTable")
 table = dynamodb.Table(TABLE_NAME)  # type: ignore
 serializer = TypeSerializer()
@@ -203,17 +204,45 @@ def _membership_key(prefix, identifier):
     return {"PK": f"{prefix}#{identifier}", "SK": "PAREJA"}
 
 
+def _email_from_access_token(event):
+    headers = event.get("headers", {}) or {}
+    authorization = next(
+        (value for key, value in headers.items() if key.lower() == "authorization"),
+        "",
+    )
+    scheme, separator, access_token = str(authorization).partition(" ")
+    if not separator or scheme.casefold() != "bearer" or not access_token.strip():
+        return ""
+    try:
+        profile = cognito.get_user(AccessToken=access_token.strip())
+    except ClientError as exc:
+        log_event(
+            logger,
+            "🟡",
+            "No se pudieron recuperar atributos de Cognito",
+            error_code=exc.response.get("Error", {}).get("Code", "Unknown"),
+        )
+        return ""
+    attributes = {
+        attribute["Name"]: attribute["Value"]
+        for attribute in profile.get("UserAttributes", [])
+    }
+    return _normalize_email(attributes.get("email"))
+
+
 def _save_user_membership(user, couple_id):
     now = get_iso_timestamp()
+    item = {
+        **_membership_key("USUARIO", user["sub"]),
+        "coupleId": couple_id,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    if user.get("email"):
+        item["email"] = user["email"]
     try:
         table.put_item(
-            Item={
-                **_membership_key("USUARIO", user["sub"]),
-                "coupleId": couple_id,
-                "email": user["email"],
-                "createdAt": now,
-                "updatedAt": now,
-            },
+            Item=item,
             ConditionExpression=Attr("PK").not_exists() | Attr("coupleId").eq(couple_id),
         )
     except ClientError as exc:
@@ -231,31 +260,33 @@ def _resolve_couple_context(event):
     if user_membership:
         user["email"] = user["email"] or _normalize_email(user_membership.get("email"))
         if not user["email"]:
-            raise ForbiddenError("La membresía del usuario no tiene un correo asociado")
+            user["email"] = _email_from_access_token(event)
         return f"PAREJA#{user_membership['coupleId']}", user
 
-    email_membership = table.get_item(
+    if not user["email"]:
+        user["email"] = _email_from_access_token(event)
+
+    if user["email"]:
+        email_membership = table.get_item(
             Key=_membership_key("EMAIL", user["email"]),
             ConsistentRead=True,
         ).get("Item")
-    if email_membership:
-        couple_id = email_membership["coupleId"]
-        _save_user_membership(user, couple_id)
-        return f"PAREJA#{couple_id}", user
+        if email_membership:
+            couple_id = email_membership["coupleId"]
+            _save_user_membership(user, couple_id)
+            return f"PAREJA#{couple_id}", user
 
-    # Compatibilidad: adopta la partición histórica solo si el correo pertenece
-    # a uno de sus integrantes.
-    legacy = table.get_item(
-        Key={"PK": f"PAREJA#{LEGACY_COUPLE_ID}", "SK": "META"},
-        ConsistentRead=True,
-    ).get("Item")
-    legacy_emails = {
-        _normalize_email(legacy.get(partner, {}).get("email"))
-        for partner in ("user1", "user2")
-    } if legacy else set()
-    if user["email"] in legacy_emails:
-        _save_user_membership(user, LEGACY_COUPLE_ID)
-        return f"PAREJA#{LEGACY_COUPLE_ID}", user
+        legacy = table.get_item(
+            Key={"PK": f"PAREJA#{LEGACY_COUPLE_ID}", "SK": "META"},
+            ConsistentRead=True,
+        ).get("Item")
+        legacy_emails = {
+            _normalize_email(legacy.get(partner, {}).get("email"))
+            for partner in ("user1", "user2")
+        } if legacy else set()
+        if user["email"] in legacy_emails:
+            _save_user_membership(user, LEGACY_COUPLE_ID)
+            return f"PAREJA#{LEGACY_COUPLE_ID}", user
 
     raise ForbiddenError("El usuario no pertenece a una pareja de finanzas")
 
@@ -423,7 +454,7 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
     normalized_emails = {_normalize_email(user1_email), _normalize_email(user2_email)}
     if "" in normalized_emails or len(normalized_emails) != 2:
         return {"error": "Los correos de los integrantes deben ser válidos y diferentes"}, 400
-    if user["email"] not in normalized_emails:
+    if user["email"] and user["email"] not in normalized_emails:
         return {"error": "El usuario autenticado debe ser uno de los integrantes"}, 403
 
     couple_id = _couple_id_for_emails(user1_email, user2_email)
@@ -457,13 +488,15 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
             }
             for email in normalized_emails
         ]
-        membership_items.append({
+        user_membership = {
             **_membership_key("USUARIO", user["sub"]),
             "coupleId": couple_id,
-            "email": user["email"],
             "createdAt": now,
             "updatedAt": now,
-        })
+        }
+        if user.get("email"):
+            user_membership["email"] = user["email"]
+        membership_items.append(user_membership)
         dynamodb_client.transact_write_items(
             TransactItems=[
                 {

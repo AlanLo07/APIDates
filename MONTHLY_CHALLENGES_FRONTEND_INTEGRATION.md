@@ -4,7 +4,7 @@
 
 La API base es el output `ApiUrl` del stack SAM. Todas las rutas están bajo `/monthly-challenges` y aceptan JSON. Enviar el JWT de Cognito en `Authorization: Bearer <token>` y `Content-Type: application/json`.
 
-El backend identifica al usuario mediante el claim `sub`. Si el JWT no incluye `email` (como puede ocurrir con un access token), las operaciones de pareja recuperan el correo de la membresía ya registrada. Para `POST /monthly-challenges/init`, usar un token que incluya el claim `email`; no enviar `userId`, `coupleId`, `createdBy` ni `proposedBy` para atribuir acciones. La pertenencia a pareja de este módulo es independiente de FinancesCRUD, por lo que debe inicializarse aquí también. Las operaciones de pareja requieren membresía; catálogo no requiere membresía, aunque sí la autenticación del authorizer de la API.
+El backend identifica al usuario mediante el claim `sub`. Si el JWT no incluye `email`, una membresía ya vinculada por `USUARIO#{sub}` sigue funcionando. `POST /monthly-challenges/init` conserva `user1Email`, `user2Email`, `user1Name` y `user2Name` en el body para mantener el `coupleId` histórico; el claim `email` del JWT es opcional. No enviar `userId`, `coupleId`, `createdBy` ni `proposedBy` para atribuir acciones. La pertenencia a pareja de este módulo es independiente de FinancesCRUD, por lo que debe inicializarse aquí también. Las operaciones de pareja requieren membresía; catálogo no requiere membresía, aunque sí la autenticación del authorizer de la API. `GET /auth/me` obtiene los atributos del perfil desde Cognito cuando no vienen en los claims.
 
 Las respuestas usan el envelope habitual de API Gateway: JSON en el body y HTTP status code. Los errores tienen forma `{ "error": "..." }`.
 

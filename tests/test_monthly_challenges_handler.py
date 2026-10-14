@@ -297,6 +297,8 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         self.assertEqual(state["proposals"], [])
 
     def test_access_token_without_email_uses_user_membership(self):
+        membership = self.table.items[(f"USUARIO#{self.user1['sub']}", "PAREJA")]
+        membership.pop("email", None)
         request = make_event("/monthly-challenges/current", sub=self.user1["sub"], email=self.user1["email"])
         del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
 
@@ -304,7 +306,43 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
 
         self.assertEqual(couple_pk, self.couple_pk)
         self.assertEqual(user["sub"], self.user1["sub"])
-        self.assertEqual(user["email"], self.user1["email"])
+        self.assertEqual(user["email"], "")
+
+    def test_legacy_email_membership_is_found_without_email_claim(self):
+        legacy_email = "legacy@example.com"
+        self.table.items[(f"EMAIL#{legacy_email}", "PAREJA")] = {
+            "PK": f"EMAIL#{legacy_email}", "SK": "PAREJA",
+            "coupleId": self.couple_pk.removeprefix("PAREJA#"),
+        }
+        request = make_event("/monthly-challenges/current", sub="sub-legacy", email="")
+        del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
+        request["headers"] = {"Authorization": "Bearer access-token"}
+
+        with patch.object(self.handler, "_email_from_access_token", return_value=legacy_email):
+            couple_pk, user = self.handler._resolve_couple_context(request)
+
+        self.assertEqual(couple_pk, self.couple_pk)
+        self.assertEqual(user["sub"], "sub-legacy")
+        promoted = self.table.get_item(
+            Key=self.handler._membership_key("USUARIO", "sub-legacy")
+        )["Item"]
+        self.assertEqual(promoted["coupleId"], self.couple_pk.removeprefix("PAREJA#"))
+
+    def test_init_without_token_email_preserves_email_based_couple_id(self):
+        user = {"sub": "sub-99", "email": "", "name": "Nueva"}
+        result, status = self.handler.init_couple(
+            user, "Nueva", "Pareja", "nueva@example.com", "pareja@example.com"
+        )
+
+        expected_id = self.handler._couple_id_for_emails(
+            "nueva@example.com", "pareja@example.com"
+        )
+        self.assertEqual(status, 201)
+        self.assertEqual(result["coupleId"], expected_id)
+        membership = self.table.get_item(
+            Key=self.handler._membership_key("USUARIO", user["sub"])
+        )["Item"]
+        self.assertNotIn("email", membership)
 
     # ── Propuestas simultáneas y silencio != consentimiento ───────────────
 

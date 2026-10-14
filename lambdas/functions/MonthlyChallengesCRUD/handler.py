@@ -55,6 +55,7 @@ logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
 dynamodb_client = cast(Any, dynamodb.meta).client
+cognito = boto3.client("cognito-idp")
 serializer = TypeSerializer()
 
 TABLE_NAME = os.environ.get("MONTHLY_CHALLENGES_TABLE_NAME", "MonthlyChallengesTable")
@@ -155,6 +156,32 @@ def _membership_key(prefix, identifier):
     return {"PK": f"{prefix}#{identifier}", "SK": "PAREJA"}
 
 
+def _email_from_access_token(event):
+    headers = event.get("headers", {}) or {}
+    authorization = next(
+        (value for key, value in headers.items() if key.lower() == "authorization"),
+        "",
+    )
+    scheme, separator, access_token = str(authorization).partition(" ")
+    if not separator or scheme.casefold() != "bearer" or not access_token.strip():
+        return ""
+    try:
+        profile = cognito.get_user(AccessToken=access_token.strip())
+    except ClientError as exc:
+        log_event(
+            logger,
+            "🟡",
+            "No se pudieron recuperar atributos de Cognito",
+            error_code=exc.response.get("Error", {}).get("Code", "Unknown"),
+        )
+        return ""
+    attributes = {
+        attribute["Name"]: attribute["Value"]
+        for attribute in profile.get("UserAttributes", [])
+    }
+    return _normalize_email(attributes.get("email"))
+
+
 def _couple_id_for_emails(email1, email2):
     normalized = sorted((_normalize_email(email1), _normalize_email(email2)))
     digest = hashlib.sha256("|".join(normalized).encode("utf-8")).hexdigest()
@@ -163,10 +190,13 @@ def _couple_id_for_emails(email1, email2):
 
 def _save_user_membership(user, couple_id):
     now = now_iso()
+    item = {**_membership_key("USUARIO", user["sub"]), "coupleId": couple_id,
+            "createdAt": now, "updatedAt": now}
+    if user.get("email"):
+        item["email"] = user["email"]
     try:
         table.put_item(
-            Item={**_membership_key("USUARIO", user["sub"]), "coupleId": couple_id, "email": user["email"],
-                  "createdAt": now, "updatedAt": now},
+            Item=item,
             ConditionExpression=Attr("PK").not_exists() | Attr("coupleId").eq(couple_id),
         )
     except ClientError as exc:
@@ -181,14 +211,20 @@ def _resolve_couple_context(event):
     if user_membership:
         user["email"] = user["email"] or _normalize_email(user_membership.get("email"))
         if not user["email"]:
-            raise ForbiddenError("La membresía del usuario no tiene un correo asociado")
+            user["email"] = _email_from_access_token(event)
         return f"PAREJA#{user_membership['coupleId']}", user
 
-    email_membership = table.get_item(Key=_membership_key("EMAIL", user["email"]), ConsistentRead=True).get("Item")
-    if email_membership:
-        couple_id = email_membership["coupleId"]
-        _save_user_membership(user, couple_id)
-        return f"PAREJA#{couple_id}", user
+    if not user["email"]:
+        user["email"] = _email_from_access_token(event)
+
+    if user["email"]:
+        email_membership = table.get_item(
+            Key=_membership_key("EMAIL", user["email"]), ConsistentRead=True
+        ).get("Item")
+        if email_membership:
+            couple_id = email_membership["coupleId"]
+            _save_user_membership(user, couple_id)
+            return f"PAREJA#{couple_id}", user
 
     raise ForbiddenError("El usuario no pertenece a una pareja de retos mensuales")
 
@@ -198,7 +234,7 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
     normalized_emails = {_normalize_email(user1_email), _normalize_email(user2_email)}
     if "" in normalized_emails or len(normalized_emails) != 2:
         return {"error": "Los correos de los integrantes deben ser válidos y diferentes"}, 400
-    if user["email"] not in normalized_emails:
+    if user["email"] and user["email"] not in normalized_emails:
         return {"error": "El usuario autenticado debe ser uno de los integrantes"}, 403
 
     couple_id = _couple_id_for_emails(user1_email, user2_email)
@@ -213,8 +249,11 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
         {**_membership_key("EMAIL", email), "coupleId": couple_id, "createdAt": now, "updatedAt": now}
         for email in normalized_emails
     ]
-    membership_items.append({**_membership_key("USUARIO", user["sub"]), "coupleId": couple_id,
-                              "email": user["email"], "createdAt": now, "updatedAt": now})
+    user_membership = {**_membership_key("USUARIO", user["sub"]), "coupleId": couple_id,
+                       "createdAt": now, "updatedAt": now}
+    if user.get("email"):
+        user_membership["email"] = user["email"]
+    membership_items.append(user_membership)
     try:
         dynamodb_client.transact_write_items(TransactItems=[
             {"Put": {"TableName": TABLE_NAME, "Item": {k: serializer.serialize(v) for k, v in item.items()},
@@ -964,6 +1003,50 @@ def get_month_status(couple_pk, user, month_key):
     return build_month_state(couple_pk, existing, user), 200
 
 
+def _handle_init_route(method, path, event, body):
+    if method != "POST" or path != "/monthly-challenges/init":
+        return None
+    user = _get_request_user(event)
+    required = {"user1Email", "user2Email", "user1Name", "user2Name"}
+    if not isinstance(body, dict) or not required.issubset(body):
+        return build_response(400, {"error": "Faltan campos requeridos"})
+    result, status = init_couple(
+        user,
+        body["user1Name"],
+        body["user2Name"],
+        body["user1Email"],
+        body["user2Email"],
+    )
+    return build_response(status, result)
+
+
+def _handle_catalog_routes(method, path, event, body, query_params):
+    if path == "/monthly-challenges/catalog" and method == "POST":
+        _get_request_user(event)
+        result, status = create_catalog_challenge(cast(dict, body))
+        return build_response(status, result)
+    if path == "/monthly-challenges/catalog" and method == "GET":
+        result, status = list_catalog_challenges(query_params)
+        return build_response(status, result)
+    if path == "/monthly-challenges/catalog/random" and method == "GET":
+        couple_pk, _user = _resolve_couple_context(event)
+        result, status = suggest_random_challenge(couple_pk, query_params)
+        return build_response(status, result)
+
+    challenge_id = get_path_param(event, "challengeId")
+    if challenge_id and "/catalog/" in path:
+        if method == "GET":
+            result, status = get_catalog_challenge(challenge_id)
+        elif method == "PUT":
+            result, status = update_catalog_challenge(challenge_id, cast(dict, body))
+        elif method == "DELETE":
+            result, status = deactivate_catalog_challenge(challenge_id)
+        else:
+            return None
+        return build_response(status, result)
+    return None
+
+
 # ─── Lambda handler / enrutamiento ────────────────────────────────────────────
 
 
@@ -981,37 +1064,13 @@ def lambda_handler(event, context):
         body = parse_body(event)
         query_params = event.get("queryStringParameters") or {}
 
-        if method == "POST" and path == "/monthly-challenges/init":
-            user = _get_request_user(event)
-            required = {"user1Email", "user2Email", "user1Name", "user2Name"}
-            if not isinstance(body, dict) or not all(k in body for k in required):
-                return build_response(400, {"error": "Faltan campos requeridos"})
-            result, status = init_couple(user, body["user1Name"], body["user2Name"], body["user1Email"],
-                                          body["user2Email"])
-            return build_response(status, result)
+        init_response = _handle_init_route(method, path, event, body)
+        if init_response is not None:
+            return init_response
 
-        # ──────── Catálogo (no depende de la pareja, salvo /random) ──────────
-        if path == "/monthly-challenges/catalog" and method == "POST":
-            user = _get_request_user(event)
-            result, status = create_catalog_challenge(cast(dict, body))
-            return build_response(status, result)
-        if path == "/monthly-challenges/catalog" and method == "GET":
-            result, status = list_catalog_challenges(query_params)
-            return build_response(status, result)
-        if path == "/monthly-challenges/catalog/random" and method == "GET":
-            couple_pk, user = _resolve_couple_context(event)
-            result, status = suggest_random_challenge(couple_pk, query_params)
-            return build_response(status, result)
-        challenge_id = get_path_param(event, "challengeId")
-        if challenge_id and "/catalog/" in path and method == "GET":
-            result, status = get_catalog_challenge(challenge_id)
-            return build_response(status, result)
-        if challenge_id and "/catalog/" in path and method == "PUT":
-            result, status = update_catalog_challenge(challenge_id, cast(dict, body))
-            return build_response(status, result)
-        if challenge_id and "/catalog/" in path and method == "DELETE":
-            result, status = deactivate_catalog_challenge(challenge_id)
-            return build_response(status, result)
+        catalog_response = _handle_catalog_routes(method, path, event, body, query_params)
+        if catalog_response is not None:
+            return catalog_response
 
         # ──────── Rutas de pareja (requieren membresía) ──────────────────────
         couple_pk, user = _resolve_couple_context(event)

@@ -81,7 +81,7 @@ class FinancesHandlerTests(unittest.TestCase):
 
     def test_access_token_without_email_uses_user_membership(self):
         self.table.get_item.return_value = {
-            "Item": {"coupleId": "couple-1", "email": "uno@example.com"}
+            "Item": {"coupleId": "couple-1"}
         }
         request = event()
         del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
@@ -90,7 +90,38 @@ class FinancesHandlerTests(unittest.TestCase):
 
         self.assertEqual(couple_pk, "PAREJA#couple-1")
         self.assertEqual(user["sub"], "user-1")
-        self.assertEqual(user["email"], "uno@example.com")
+        self.assertEqual(user["email"], "")
+
+    def test_legacy_email_membership_is_found_without_email_claim(self):
+        self.table.get_item.side_effect = [{}, {"Item": {"coupleId": "couple-legacy"}}]
+        request = event()
+        del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
+        request["headers"] = {"Authorization": "Bearer access-token"}
+
+        with patch.object(self.handler, "_email_from_access_token", return_value="uno@example.com"):
+            couple_pk, user = self.handler._resolve_couple_context(request)
+
+        self.assertEqual(couple_pk, "PAREJA#couple-legacy")
+        self.assertEqual(user["sub"], "user-1")
+        promoted_item = self.table.put_item.call_args.kwargs["Item"]
+        self.assertEqual(promoted_item["PK"], "USUARIO#user-1")
+        self.assertEqual(promoted_item["coupleId"], "couple-legacy")
+
+    def test_init_without_token_email_preserves_email_based_couple_id(self):
+        self.table.get_item.return_value = {}
+        user = {"sub": "user-1", "email": "", "name": "Uno"}
+
+        result, status = self.handler.init_couple(
+            user, "Uno", "Dos", "uno@example.com", "dos@example.com"
+        )
+
+        expected_id = self.handler._couple_id_for_emails("uno@example.com", "dos@example.com")
+        self.assertEqual(status, 201)
+        self.assertEqual(result["coupleId"], expected_id)
+        actions = self.resource.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
+        self.assertEqual(len(actions), 4)
+        user_membership = actions[3]["Put"]["Item"]
+        self.assertNotIn("email", user_membership)
 
     def test_init_is_atomic_and_uses_cop(self):
         user = {"sub": "user-1", "email": "uno@example.com", "name": "Uno"}

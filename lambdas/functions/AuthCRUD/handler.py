@@ -144,7 +144,7 @@ def logout(access_token: str) -> dict:
 
 
 def get_me(event: dict) -> dict:
-    """🔵 Lee los claims del JWT ya validado por el authorizer de API Gateway."""
+    """Retorna los claims del JWT y completa atributos desde Cognito si faltan."""
     claims = (
         event.get("requestContext", {})
         .get("authorizer", {})
@@ -153,10 +153,25 @@ def get_me(event: dict) -> dict:
     )
     if not claims:
         return build_response(401, {"error": "No autenticado"})
+
+    headers = event.get("headers", {}) or {}
+    authorization = next(
+        (value for key, value in headers.items() if key.lower() == "authorization"),
+        "",
+    )
+    scheme, separator, access_token = str(authorization).partition(" ")
+    cognito_user = {}
+    if separator and scheme.casefold() == "bearer" and access_token.strip():
+        cognito_user = cognito.get_user(AccessToken=access_token.strip())
+    attributes = {
+        attribute["Name"]: attribute["Value"]
+        for attribute in cognito_user.get("UserAttributes", [])
+    }
     return build_response(200, {
-        "sub": claims.get("sub"),
-        "email": claims.get("email"),
-        "name": claims.get("name"),
+        "sub": attributes.get("sub") or claims.get("sub"),
+        "username": cognito_user.get("Username") or claims.get("username"),
+        "email": attributes.get("email") or claims.get("email"),
+        "name": attributes.get("name") or claims.get("name"),
     })
 
 

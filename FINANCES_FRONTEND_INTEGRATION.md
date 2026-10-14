@@ -1,6 +1,6 @@
 # 🔗 Integración Frontend-Backend: Finanzas de Parejas
 
-Las operaciones de una pareja ya inicializada aceptan el access token aunque no incluya `email`: el backend obtiene ese dato de la membresía vinculada al `sub`. Para `POST /finances/init`, usar un token que sí incluya el claim `email`.
+El access token puede omitir `email`: las operaciones de parejas ya vinculadas por `USUARIO#{sub}` no lo requieren. Para `POST /finances/init`, el body conserva `user1Email`, `user2Email`, `user1Name` y `user2Name`; los emails del body mantienen el mismo `coupleId` histórico, pero el claim `email` del JWT es opcional. `GET /auth/me` obtiene los atributos faltantes directamente desde Cognito.
 
 ## 📡 Cómo Conectar Flutter con la API
 
