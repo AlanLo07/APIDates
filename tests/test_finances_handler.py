@@ -50,6 +50,7 @@ class FinancesHandlerTests(unittest.TestCase):
     def setUp(self):
         self.handler, self.resource = load_handler()
         self.table = self.handler.table
+        self.table.query.return_value = {"Items": []}
 
     def test_request_without_jwt_is_rejected(self):
         response = self.handler.lambda_handler(
@@ -66,7 +67,7 @@ class FinancesHandlerTests(unittest.TestCase):
         response = self.handler.lambda_handler(event(), lambda_context())
 
         self.assertEqual(response["statusCode"], 403)
-        self.assertEqual(self.table.get_item.call_count, 3)
+        self.assertEqual(self.table.get_item.call_count, 2)
 
     def test_email_membership_is_promoted_to_user_membership(self):
         self.table.get_item.side_effect = [{}, {"Item": {"coupleId": "couple-1"}}]
@@ -106,6 +107,44 @@ class FinancesHandlerTests(unittest.TestCase):
         promoted_item = self.table.put_item.call_args.kwargs["Item"]
         self.assertEqual(promoted_item["PK"], "USUARIO#user-1")
         self.assertEqual(promoted_item["coupleId"], "couple-legacy")
+
+    def test_legacy_default_expense_is_found_without_meta(self):
+        self.table.query.return_value = {
+            "Items": [{
+                "PK": "PAREJA#DEFAULT",
+                "SK": "GASTO#legacy-expense",
+                "createdBy": "uno@example.com",
+            }]
+        }
+        self.table.get_item.side_effect = [{}, {}]
+
+        couple_pk, _user = self.handler._resolve_couple_context(event())
+
+        self.assertEqual(couple_pk, "PAREJA#DEFAULT")
+        self.assertEqual(
+            self.table.put_item.call_args.kwargs["Item"]["coupleId"], "DEFAULT"
+        )
+
+    def test_init_adopts_default_partition_when_email_owns_legacy_expense(self):
+        self.table.query.return_value = {
+            "Items": [{
+                "PK": "PAREJA#DEFAULT",
+                "SK": "GASTO#legacy-expense",
+                "createdBy": "uno@example.com",
+            }]
+        }
+        self.table.get_item.return_value = {}
+        user = {"sub": "user-1", "email": "uno@example.com", "name": "Uno"}
+
+        result, status = self.handler.init_couple(
+            user, "Uno", "Dos", "uno@example.com", "dos@example.com"
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(result["coupleId"], "DEFAULT")
+        actions = self.resource.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
+        couple_item = actions[0]["Put"]["Item"]
+        self.assertEqual(couple_item["PK"]["S"], "PAREJA#DEFAULT")
 
     def test_init_without_token_email_preserves_email_based_couple_id(self):
         self.table.get_item.return_value = {}

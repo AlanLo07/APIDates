@@ -344,6 +344,22 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         )["Item"]
         self.assertNotIn("email", membership)
 
+    def test_init_does_not_report_non_condition_cancellation_as_duplicate(self):
+        user = {"sub": "sub-99", "email": "", "name": "Nueva"}
+        cancellation = ClientError(
+            {
+                "Error": {"Code": "TransactionCanceledException", "Message": "mock"},
+                "CancellationReasons": [{"Code": "ValidationError"}],
+            },
+            "TransactWriteItems",
+        )
+
+        with patch.object(self.handler.dynamodb_client, "transact_write_items", side_effect=cancellation):
+            with self.assertRaises(ClientError):
+                self.handler.init_couple(
+                    user, "Nueva", "Pareja", "nueva@example.com", "pareja@example.com"
+                )
+
     # ── Propuestas simultáneas y silencio != consentimiento ───────────────
 
     def test_simultaneous_proposals_are_recorded_independently(self):

@@ -276,15 +276,7 @@ def _resolve_couple_context(event):
             _save_user_membership(user, couple_id)
             return f"PAREJA#{couple_id}", user
 
-        legacy = table.get_item(
-            Key={"PK": f"PAREJA#{LEGACY_COUPLE_ID}", "SK": "META"},
-            ConsistentRead=True,
-        ).get("Item")
-        legacy_emails = {
-            _normalize_email(legacy.get(partner, {}).get("email"))
-            for partner in ("user1", "user2")
-        } if legacy else set()
-        if user["email"] in legacy_emails:
+        if user["email"] in _legacy_default_emails():
             _save_user_membership(user, LEGACY_COUPLE_ID)
             return f"PAREJA#{LEGACY_COUPLE_ID}", user
 
@@ -295,6 +287,21 @@ def _couple_id_for_emails(user1_email, user2_email):
     normalized = sorted((_normalize_email(user1_email), _normalize_email(user2_email)))
     digest = hashlib.sha256("|".join(normalized).encode("utf-8")).hexdigest()
     return digest[:24]
+
+
+def _legacy_default_emails():
+    legacy_items = query_all(
+        table,
+        KeyConditionExpression=Key("PK").eq(f"PAREJA#{LEGACY_COUPLE_ID}"),
+    )
+    emails = set()
+    for item in legacy_items:
+        for partner in ("user1", "user2"):
+            emails.add(_normalize_email(item.get(partner, {}).get("email")))
+        for field in ("createdBy", "createdByEmail"):
+            emails.add(_normalize_email(item.get(field)))
+    emails.discard("")
+    return emails
 
 
 def _database_error(message, exc):
@@ -457,7 +464,12 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
     if user["email"] and user["email"] not in normalized_emails:
         return {"error": "El usuario autenticado debe ser uno de los integrantes"}, 403
 
-    couple_id = _couple_id_for_emails(user1_email, user2_email)
+    adopts_legacy_partition = bool(normalized_emails & _legacy_default_emails())
+    couple_id = (
+        LEGACY_COUPLE_ID
+        if adopts_legacy_partition
+        else _couple_id_for_emails(user1_email, user2_email)
+    )
     couple_pk = f"PAREJA#{couple_id}"
 
     try:
@@ -497,6 +509,11 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
         if user.get("email"):
             user_membership["email"] = user["email"]
         membership_items.append(user_membership)
+        transaction_items = [couple_item, *membership_items]
+        if adopts_legacy_partition and table.get_item(
+            Key={"PK": couple_pk, "SK": "META"}, ConsistentRead=True
+        ).get("Item"):
+            transaction_items = membership_items
         dynamodb_client.transact_write_items(
             TransactItems=[
                 {
@@ -506,7 +523,7 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
                         "ConditionExpression": "attribute_not_exists(PK)",
                     }
                 }
-                for item in [couple_item, *membership_items]
+                for item in transaction_items
             ]
         )
 

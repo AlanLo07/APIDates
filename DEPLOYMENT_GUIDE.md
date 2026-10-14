@@ -132,7 +132,7 @@ Mounting FinancesCRUD at http://127.0.0.1:3000/finances [POST, GET, PUT, DELETE.
 ### Test Local: Crear Pareja
 
 ```bash
-curl -X POST http://localhost:3000/finances \
+curl -X POST http://localhost:3000/finances/init \
   -H "Content-Type: application/json" \
   -d '{
     "user1Email": "juan@example.com",
@@ -145,9 +145,10 @@ curl -X POST http://localhost:3000/finances \
 **Response (201):**
 ```json
 {
-  "parejaId": "abc-123-xyz",
+  "coupleId": "abc-123-xyz",
   "user1": {"email": "juan@example.com", "name": "Juan"},
   "user2": {"email": "maria@example.com", "name": "María"},
+  "currency": "COP",
   "createdAt": "2026-07-23T10:00:00+00:00"
 }
 ```
