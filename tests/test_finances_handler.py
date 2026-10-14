@@ -50,6 +50,7 @@ class FinancesHandlerTests(unittest.TestCase):
     def setUp(self):
         self.handler, self.resource = load_handler()
         self.table = self.handler.table
+        self.table.get_item.return_value = {}
         self.table.query.return_value = {"Items": []}
 
     def test_request_without_jwt_is_rejected(self):
@@ -146,9 +147,53 @@ class FinancesHandlerTests(unittest.TestCase):
         couple_item = actions[0]["Put"]["Item"]
         self.assertEqual(couple_item["PK"]["S"], "PAREJA#DEFAULT")
 
-    def test_init_without_token_email_preserves_email_based_couple_id(self):
+    def test_configured_couple_adopts_default_rows_with_unknown_or_missing_owner(self):
+        self.table.query.return_value = {
+            "Items": [
+                {"PK": "PAREJA#DEFAULT", "SK": "GASTO#unknown", "createdBy": "unknown"},
+                {"PK": "PAREJA#DEFAULT", "SK": "GASTO#null", "createdBy": None},
+            ]
+        }
+        user = {"sub": "alan-sub", "email": "alan.lopezg9707@gmail.com", "name": "Alan"}
+
+        with patch.object(
+            self.handler,
+            "LEGACY_FINANCES_EMAILS",
+            frozenset({"alan.lopezg9707@gmail.com", "mariana.delgado6@icloud.com"}),
+        ):
+            result, status = self.handler.init_couple(
+                user,
+                "Alan",
+                "Mariana",
+                "alan.lopezg9707@gmail.com",
+                "mariana.delgado6@icloud.com",
+            )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(result["coupleId"], "DEFAULT")
+        actions = self.resource.meta.client.transact_write_items.call_args.kwargs["TransactItems"]
+        self.assertEqual(actions[0]["Put"]["Item"]["PK"]["S"], "PAREJA#DEFAULT")
+
+    def test_configured_users_resolve_default_before_old_hashed_membership(self):
+        self.table.get_item.side_effect = [
+            {"Item": {"coupleId": "old-hashed-couple"}},
+            {"Item": {"user1": {"email": "alan.lopezg9707@gmail.com"}}},
+        ]
+
+        with patch.object(
+            self.handler,
+            "LEGACY_FINANCES_EMAILS",
+            frozenset({"alan.lopezg9707@gmail.com", "mariana.delgado6@icloud.com"}),
+        ):
+            couple_pk, _user = self.handler._resolve_couple_context(
+                event(email="alan.lopezg9707@gmail.com")
+            )
+
+        self.assertEqual(couple_pk, "PAREJA#DEFAULT")
+
+    def test_init_preserves_email_based_couple_id(self):
         self.table.get_item.return_value = {}
-        user = {"sub": "user-1", "email": "", "name": "Uno"}
+        user = {"sub": "user-1", "email": "uno@example.com", "name": "Uno"}
 
         result, status = self.handler.init_couple(
             user, "Uno", "Dos", "uno@example.com", "dos@example.com"
@@ -161,6 +206,25 @@ class FinancesHandlerTests(unittest.TestCase):
         self.assertEqual(len(actions), 4)
         user_membership = actions[3]["Put"]["Item"]
         self.assertNotIn("email", user_membership)
+
+    def test_init_resolves_missing_claim_email_from_access_token(self):
+        request = event(
+            path="/finances/init",
+            method="POST",
+            body={
+                "user1Email": "uno@example.com",
+                "user2Email": "dos@example.com",
+                "user1Name": "Uno",
+                "user2Name": "Dos",
+            },
+        )
+        del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
+        request["headers"] = {"Authorization": "Bearer access-token"}
+
+        with patch.object(self.handler, "_email_from_access_token", return_value="uno@example.com"):
+            response = self.handler.lambda_handler(request, lambda_context())
+
+        self.assertEqual(response["statusCode"], 201)
 
     def test_init_is_atomic_and_uses_cop(self):
         user = {"sub": "user-1", "email": "uno@example.com", "name": "Uno"}

@@ -51,6 +51,14 @@ Parameters:
     MinValue: "1"
     MaxValue: "3650"
     Description: "Días que dura el refreshToken antes de forzar un nuevo login"
+  LegacyFinancesEmail1:
+    Type: String
+    Default: alan.lopezg9707@gmail.com
+    Description: "Primer integrante autorizado para adoptar los registros legacy de Finanzas"
+  LegacyFinancesEmail2:
+    Type: String
+    Default: mariana.delgado6@icloud.com
+    Description: "Segundo integrante autorizado para adoptar los registros legacy de Finanzas"
   # KamasutraTableName:
   #   Type: String
   #   Default: KamasutraTable
@@ -928,6 +936,9 @@ Resources:
       CodeUri: functions/FinancesCRUD/
       Handler: handler.lambda_handler
       Description: "CRUD de Finanzas de una Pareja con presupuestos y históricos"
+      Environment:
+        Variables:
+          FINANCES_LEGACY_COUPLE_EMAILS: !Sub "${LegacyFinancesEmail1},${LegacyFinancesEmail2}"
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref FinancesTable

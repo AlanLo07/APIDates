@@ -265,16 +265,22 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
                 "user2": {"name": user2_name, "email": user2_email}, "createdAt": now}, 201
     except ClientError as exc:
         error_code = exc.response.get("Error", {}).get("Code", "Unknown")
-        cancellation_codes = [
-            reason.get("Code", "Unknown")
-            for reason in exc.response.get("CancellationReasons", [])
+        cancellation_details = [
+            {
+                "action_index": index,
+                "action_type": "Put",
+                "reason_code": reason.get("Code", "Unknown"),
+                "reason": str(reason.get("Message", ""))[:300],
+            }
+            for index, reason in enumerate(exc.response.get("CancellationReasons", []))
         ]
+        cancellation_codes = [detail["reason_code"] for detail in cancellation_details]
         if error_code == "TransactionCanceledException":
             log_event(
                 logger,
                 "🔴",
                 "Transacción de inicialización cancelada",
-                cancellation_codes=cancellation_codes,
+                cancellation_details=cancellation_details,
             )
         if error_code == "ConditionalCheckFailedException" or "ConditionalCheckFailed" in cancellation_codes:
             return {"error": "La pareja o uno de sus integrantes ya está registrado"}, 409

@@ -60,6 +60,11 @@ serializer = TypeSerializer()
 # ─── Constantes Globales ──────────────────────────────────────────────────────
 
 LEGACY_COUPLE_ID = "DEFAULT"
+LEGACY_FINANCES_EMAILS = frozenset(
+    email.strip().casefold()
+    for email in os.environ.get("FINANCES_LEGACY_COUPLE_EMAILS", "").split(",")
+    if email.strip()
+)
 DEFAULT_CURRENCY = "COP"
 
 EXPENSE_CATEGORIES = {
@@ -257,14 +262,21 @@ def _resolve_couple_context(event):
         Key=_membership_key("USUARIO", user["sub"]),
         ConsistentRead=True,
     ).get("Item")
-    if user_membership:
+    if user_membership and not user["email"]:
         user["email"] = user["email"] or _normalize_email(user_membership.get("email"))
-        if not user["email"]:
-            user["email"] = _email_from_access_token(event)
-        return f"PAREJA#{user_membership['coupleId']}", user
-
     if not user["email"]:
         user["email"] = _email_from_access_token(event)
+
+    if user["email"] in LEGACY_FINANCES_EMAILS:
+        legacy_meta = table.get_item(
+            Key={"PK": f"PAREJA#{LEGACY_COUPLE_ID}", "SK": "META"},
+            ConsistentRead=True,
+        ).get("Item")
+        if legacy_meta:
+            return f"PAREJA#{LEGACY_COUPLE_ID}", user
+
+    if user_membership:
+        return f"PAREJA#{user_membership['coupleId']}", user
 
     if user["email"]:
         email_membership = table.get_item(
@@ -289,11 +301,15 @@ def _couple_id_for_emails(user1_email, user2_email):
     return digest[:24]
 
 
-def _legacy_default_emails():
-    legacy_items = query_all(
+def _legacy_default_items():
+    return query_all(
         table,
         KeyConditionExpression=Key("PK").eq(f"PAREJA#{LEGACY_COUPLE_ID}"),
     )
+
+
+def _legacy_default_emails():
+    legacy_items = _legacy_default_items()
     emails = set()
     for item in legacy_items:
         for partner in ("user1", "user2"):
@@ -301,6 +317,8 @@ def _legacy_default_emails():
         for field in ("createdBy", "createdByEmail"):
             emails.add(_normalize_email(item.get(field)))
     emails.discard("")
+    if legacy_items:
+        emails.update(LEGACY_FINANCES_EMAILS)
     return emails
 
 
@@ -461,10 +479,15 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
     normalized_emails = {_normalize_email(user1_email), _normalize_email(user2_email)}
     if "" in normalized_emails or len(normalized_emails) != 2:
         return {"error": "Los correos de los integrantes deben ser válidos y diferentes"}, 400
-    if user["email"] and user["email"] not in normalized_emails:
+    if not user["email"] or user["email"] not in normalized_emails:
         return {"error": "El usuario autenticado debe ser uno de los integrantes"}, 403
 
-    adopts_legacy_partition = bool(normalized_emails & _legacy_default_emails())
+    legacy_items = _legacy_default_items()
+    legacy_owner_emails = _legacy_default_emails() - LEGACY_FINANCES_EMAILS
+    configured_pair = len(LEGACY_FINANCES_EMAILS) == 2 and normalized_emails == LEGACY_FINANCES_EMAILS
+    adopts_legacy_partition = bool(legacy_items) and (
+        configured_pair or bool(normalized_emails & legacy_owner_emails)
+    )
     couple_id = (
         LEGACY_COUPLE_ID
         if adopts_legacy_partition
@@ -509,13 +532,22 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
         if user.get("email"):
             user_membership["email"] = user["email"]
         membership_items.append(user_membership)
-        transaction_items = [couple_item, *membership_items]
-        if adopts_legacy_partition and table.get_item(
+        transaction_items = []
+        if not table.get_item(
             Key={"PK": couple_pk, "SK": "META"}, ConsistentRead=True
         ).get("Item"):
-            transaction_items = membership_items
-        dynamodb_client.transact_write_items(
-            TransactItems=[
+            transaction_items.append(couple_item)
+        for item in membership_items:
+            existing_membership = table.get_item(
+                Key={"PK": item["PK"], "SK": item["SK"]}, ConsistentRead=True
+            ).get("Item")
+            if not existing_membership:
+                transaction_items.append(item)
+            elif existing_membership.get("coupleId") != couple_id and not adopts_legacy_partition:
+                return {"error": "El usuario ya pertenece a otra pareja"}, 409
+        if transaction_items:
+            dynamodb_client.transact_write_items(
+                TransactItems=[
                 {
                     "Put": {
                         "TableName": TABLE_NAME,
@@ -524,8 +556,8 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
                     }
                 }
                 for item in transaction_items
-            ]
-        )
+                ]
+            )
 
         log_event(logger, "🟢", "Pareja inicializada", couple_ref=couple_id[-8:])
         return {
@@ -1983,6 +2015,8 @@ def lambda_handler(event, context):
         # ──────── POST /finances/init ─────────────────────────────────────────
         if method == "POST" and path == "/finances/init":
             user = _get_request_user(event)
+            if not user["email"]:
+                user["email"] = _email_from_access_token(event)
             required = {"user1Email", "user2Email", "user1Name", "user2Name"}
             if not all(k in body for k in required):
                 return build_response(400, {"error": "Faltan campos requeridos"})
