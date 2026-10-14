@@ -344,6 +344,18 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         )["Item"]
         self.assertNotIn("email", membership)
 
+    def test_init_sends_partition_key_as_string_attribute(self):
+        user = {"sub": "sub-wire-test", "email": "wire@example.com", "name": "Wire"}
+        with patch.object(self.handler.dynamodb_client, "transact_write_items") as transact:
+            result, status = self.handler.init_couple(
+                user, "Wire", "Partner", "wire@example.com", "partner@example.com"
+            )
+
+        self.assertEqual(status, 201)
+        action = transact.call_args.kwargs["TransactItems"][0]["Put"]
+        self.assertEqual(action["Item"]["PK"], {"S": f"PAREJA#{result['coupleId']}"})
+        self.assertEqual(action["Item"]["SK"], {"S": "META"})
+
     def test_init_does_not_report_non_condition_cancellation_as_duplicate(self):
         user = {"sub": "sub-99", "email": "", "name": "Nueva"}
         cancellation = ClientError(

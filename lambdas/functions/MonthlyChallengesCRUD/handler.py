@@ -111,12 +111,26 @@ def _dynamo_value_map(values):
     return {key: serializer.serialize(value) for key, value in values.items()}
 
 
+def _serialize_transaction_item(item):
+    serialized = {}
+    for attribute_name, attribute_value in item.items():
+        if attribute_name in {"PK", "SK"}:
+            if not isinstance(attribute_value, str):
+                raise TypeError(f"{attribute_name} debe ser string")
+            serialized[attribute_name] = {"S": attribute_value}
+        else:
+            serialized[attribute_name] = serializer.serialize(attribute_value)
+    return serialized
+
+
 def _execute_transaction(actions):
     serialized_actions = []
     for action in actions:
         operation, detail = next(iter(action.items()))
         serialized_detail = dict(detail)
-        for key in ("Item", "Key", "ExpressionAttributeValues"):
+        if "Item" in serialized_detail:
+            serialized_detail["Item"] = _serialize_transaction_item(serialized_detail["Item"])
+        for key in ("Key", "ExpressionAttributeValues"):
             if key in serialized_detail:
                 serialized_detail[key] = _dynamo_value_map(serialized_detail[key])
         serialized_actions.append({operation: serialized_detail})
@@ -255,9 +269,8 @@ def init_couple(user, user1_name, user2_name, user1_email, user2_email):
         user_membership["email"] = user["email"]
     membership_items.append(user_membership)
     try:
-        dynamodb_client.transact_write_items(TransactItems=[
-            {"Put": {"TableName": TABLE_NAME, "Item": {k: serializer.serialize(v) for k, v in item.items()},
-                     "ConditionExpression": "attribute_not_exists(PK)"}}
+        _execute_transaction([
+            _put_action(item)
             for item in [couple_item, *membership_items]
         ])
         log_event(logger, "🟢", "Pareja de retos mensuales inicializada", couple_ref=couple_id[-8:])
