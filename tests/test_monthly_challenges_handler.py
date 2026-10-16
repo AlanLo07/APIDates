@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import boto3
 from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 
@@ -229,7 +230,10 @@ def load_handler():
     resource.Table.side_effect = lambda name: tables_by_name[name]
     resource.meta.client = FakeDynamoClient(tables_by_name)
 
-    with patch("boto3.resource", return_value=resource):
+    def mock_client(service_name):
+        return resource.meta.client if service_name == "dynamodb" else MagicMock()
+
+    with patch("boto3.resource", return_value=resource), patch("boto3.client", side_effect=mock_client):
         spec = importlib.util.spec_from_file_location("monthly_challenges_handler_test", HANDLER_PATH)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
@@ -355,6 +359,43 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         action = transact.call_args.kwargs["TransactItems"][0]["Put"]
         self.assertEqual(action["Item"]["PK"], {"S": f"PAREJA#{result['coupleId']}"})
         self.assertEqual(action["Item"]["SK"], {"S": "META"})
+
+    def test_init_serializes_keys_once_in_wire_request(self):
+        session = boto3.Session(
+            aws_access_key_id="testing",
+            aws_secret_access_key="testing",
+            region_name="us-east-1",
+        )
+        resource = session.resource("dynamodb")
+        spec = importlib.util.spec_from_file_location("monthly_challenges_wire_test", HANDLER_PATH)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        with patch("boto3.resource", return_value=resource), patch("boto3.client", side_effect=session.client):
+            spec.loader.exec_module(module)
+
+        requests = []
+
+        def capture_request(params, **kwargs):
+            requests.append(json.loads(params["body"]))
+            return SimpleNamespace(status_code=200), {}
+
+        module.dynamodb_client.meta.events.register(
+            "before-call.dynamodb.TransactWriteItems", capture_request
+        )
+        result, status = module.init_couple(
+            self.user1, "Uno", "Dos", self.user1["email"], self.user2["email"]
+        )
+
+        self.assertEqual(status, 201)
+        actions = requests[0]["TransactItems"]
+        self.assertEqual(len(actions), 4)
+        for action in actions:
+            item = action["Put"]["Item"]
+            self.assertEqual(set(item["PK"]), {"S"})
+            self.assertIsInstance(item["PK"]["S"], str)
+            self.assertEqual(set(item["SK"]), {"S"})
+            self.assertIsInstance(item["SK"]["S"], str)
+        self.assertEqual(actions[0]["Put"]["Item"]["PK"]["S"], f"PAREJA#{result['coupleId']}")
 
     def test_init_does_not_report_non_condition_cancellation_as_duplicate(self):
         user = {"sub": "sub-99", "email": "", "name": "Nueva"}

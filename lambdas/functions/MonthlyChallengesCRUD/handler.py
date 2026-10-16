@@ -54,7 +54,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
-dynamodb_client = cast(Any, dynamodb.meta).client
+dynamodb_client = boto3.client("dynamodb")
 cognito = boto3.client("cognito-idp")
 serializer = TypeSerializer()
 
