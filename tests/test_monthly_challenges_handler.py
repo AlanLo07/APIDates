@@ -241,6 +241,17 @@ def load_handler():
 
     import common.utils as common_utils
     common_utils._SCAN_CACHE.clear()
+    setattr(module, "USER_POOL_ID", "test-pool")
+    module.cognito.list_users.return_value = {
+        "Users": [
+            {"Attributes": [{"Name": "sub", "Value": "sub-1"},
+                            {"Name": "email", "Value": "uno@example.com"},
+                            {"Name": "name", "Value": "Uno"}]},
+            {"Attributes": [{"Name": "sub", "Value": "sub-2"},
+                            {"Name": "email", "Value": "dos@example.com"},
+                            {"Name": "name", "Value": "Dos"}]},
+        ]
+    }
     return module, monthly_table, catalog_table
 
 
@@ -261,19 +272,92 @@ def lambda_context():
     return SimpleNamespace(function_name="monthly-challenges-crud-test")
 
 
+class SharedUsersAccessTests(unittest.TestCase):
+    def test_both_users_access_without_init_or_membership_writes(self):
+        handler, table, _catalog = load_handler()
+        contexts = [handler._resolve_couple_context(
+            make_event("/monthly-challenges/current", sub=sub, email="")
+        ) for sub in ("sub-1", "sub-2")]
+
+        self.assertEqual(contexts[0][0], contexts[1][0])
+        self.assertEqual(contexts[0][1]["email"], "uno@example.com")
+        self.assertEqual(contexts[1][1]["email"], "dos@example.com")
+        self.assertEqual(table.items, {})
+
+    def test_init_is_optional_idempotent_and_ignores_supplied_members(self):
+        handler, table, _catalog = load_handler()
+        for sub in ("sub-1", "sub-2", "sub-1"):
+            response = handler.lambda_handler(make_event(
+                "/monthly-challenges/init", method="POST", sub=sub, email="",
+                body={"user1Email": "ajeno@example.com"},
+            ), lambda_context())
+            self.assertEqual(response["statusCode"], 200)
+            self.assertEqual(json.loads(response["body"])["coupleId"],
+                             handler._couple_id_for_emails("uno@example.com", "dos@example.com"))
+        self.assertEqual(table.items, {})
+
+    def test_current_returns_partner_without_init(self):
+        handler, table, _catalog = load_handler()
+        for sub, partner in (("sub-1", "dos@example.com"), ("sub-2", "uno@example.com")):
+            response = handler.lambda_handler(make_event(
+                "/monthly-challenges/current", sub=sub, email="",
+            ), lambda_context())
+            self.assertEqual(response["statusCode"], 200)
+            self.assertEqual(json.loads(response["body"])["partner"]["email"], partner)
+        self.assertTrue(table.items)
+        self.assertTrue(all(sort_key.startswith("MESESTADO#") for _, sort_key in table.items))
+
+    def test_paginated_users_resolve_same_partition(self):
+        handler, _table, _catalog = load_handler()
+        users = handler.cognito.list_users.return_value["Users"]
+        handler.cognito.list_users.side_effect = [
+            {"Users": users[:1], "PaginationToken": "next-page"}, {"Users": users[1:]},
+        ]
+        couple_pk, _user = handler._resolve_couple_context(
+            make_event("/monthly-challenges/current", sub="sub-2", email="")
+        )
+        self.assertEqual(couple_pk, "PAREJA#" + handler._couple_id_for_emails(
+            "uno@example.com", "dos@example.com"))
+        self.assertEqual(handler.cognito.list_users.call_args.kwargs["PaginationToken"], "next-page")
+
+    def test_invalid_pool_configuration_fails_without_writes(self):
+        for count in (0, 1, 3):
+            with self.subTest(count=count):
+                handler, table, _catalog = load_handler()
+                users = handler.cognito.list_users.return_value["Users"]
+                handler.cognito.list_users.return_value = {"Users": (users + users)[:count]}
+                response = handler.lambda_handler(make_event(
+                    "/monthly-challenges/current", sub="sub-1"
+                ), lambda_context())
+                self.assertEqual(response["statusCode"], 503)
+                self.assertEqual(table.items, {})
+
+    def test_unknown_sub_cannot_use_existing_email_or_legacy_membership(self):
+        handler, table, _catalog = load_handler()
+        table.items[("USUARIO#stranger", "PAREJA")] = {"coupleId": "legacy"}
+        response = handler.lambda_handler(make_event(
+            "/monthly-challenges/current", sub="stranger", email="uno@example.com"
+        ), lambda_context())
+        self.assertEqual(response["statusCode"], 403)
+
+    def test_missing_sub_is_unauthenticated(self):
+        handler, table, _catalog = load_handler()
+        response = handler.lambda_handler(make_event(
+            "/monthly-challenges/current", sub="", email="uno@example.com"
+        ), lambda_context())
+        self.assertEqual(response["statusCode"], 401)
+        handler.cognito.list_users.assert_not_called()
+        self.assertEqual(table.items, {})
+
+
 class MonthlyChallengesHandlerTests(unittest.TestCase):
     def setUp(self):
         self.handler, self.table, self.catalog_table = load_handler()
         self.user1 = {"sub": "sub-1", "email": "uno@example.com", "name": "Uno"}
         self.user2 = {"sub": "sub-2", "email": "dos@example.com", "name": "Dos"}
-        self.couple_pk = self._init_couple()
-
-    def _init_couple(self):
-        result, status = self.handler.init_couple(
-            self.user1, "Uno", "Dos", self.user1["email"], self.user2["email"]
+        self.couple_pk = "PAREJA#" + self.handler._couple_id_for_emails(
+            self.user1["email"], self.user2["email"]
         )
-        self.assertEqual(status, 201)
-        return f"PAREJA#{result['coupleId']}"
 
     def _add_catalog_item(self, title="Cena sorpresa", description="Preparen una cena", category="actividades_juntos"):
         item, status = self.handler.create_catalog_challenge(
@@ -300,9 +384,7 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         )
         self.assertEqual(state["proposals"], [])
 
-    def test_access_token_without_email_uses_user_membership(self):
-        membership = self.table.items[(f"USUARIO#{self.user1['sub']}", "PAREJA")]
-        membership.pop("email", None)
+    def test_access_token_without_email_uses_cognito_profile(self):
         request = make_event("/monthly-challenges/current", sub=self.user1["sub"], email=self.user1["email"])
         del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
 
@@ -310,57 +392,9 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
 
         self.assertEqual(couple_pk, self.couple_pk)
         self.assertEqual(user["sub"], self.user1["sub"])
-        self.assertEqual(user["email"], "")
+        self.assertEqual(user["email"], self.user1["email"])
 
-    def test_legacy_email_membership_is_found_without_email_claim(self):
-        legacy_email = "legacy@example.com"
-        self.table.items[(f"EMAIL#{legacy_email}", "PAREJA")] = {
-            "PK": f"EMAIL#{legacy_email}", "SK": "PAREJA",
-            "coupleId": self.couple_pk.removeprefix("PAREJA#"),
-        }
-        request = make_event("/monthly-challenges/current", sub="sub-legacy", email="")
-        del request["requestContext"]["authorizer"]["jwt"]["claims"]["email"]
-        request["headers"] = {"Authorization": "Bearer access-token"}
-
-        with patch.object(self.handler, "_email_from_access_token", return_value=legacy_email):
-            couple_pk, user = self.handler._resolve_couple_context(request)
-
-        self.assertEqual(couple_pk, self.couple_pk)
-        self.assertEqual(user["sub"], "sub-legacy")
-        promoted = self.table.get_item(
-            Key=self.handler._membership_key("USUARIO", "sub-legacy")
-        )["Item"]
-        self.assertEqual(promoted["coupleId"], self.couple_pk.removeprefix("PAREJA#"))
-
-    def test_init_without_token_email_preserves_email_based_couple_id(self):
-        user = {"sub": "sub-99", "email": "", "name": "Nueva"}
-        result, status = self.handler.init_couple(
-            user, "Nueva", "Pareja", "nueva@example.com", "pareja@example.com"
-        )
-
-        expected_id = self.handler._couple_id_for_emails(
-            "nueva@example.com", "pareja@example.com"
-        )
-        self.assertEqual(status, 201)
-        self.assertEqual(result["coupleId"], expected_id)
-        membership = self.table.get_item(
-            Key=self.handler._membership_key("USUARIO", user["sub"])
-        )["Item"]
-        self.assertNotIn("email", membership)
-
-    def test_init_sends_partition_key_as_string_attribute(self):
-        user = {"sub": "sub-wire-test", "email": "wire@example.com", "name": "Wire"}
-        with patch.object(self.handler.dynamodb_client, "transact_write_items") as transact:
-            result, status = self.handler.init_couple(
-                user, "Wire", "Partner", "wire@example.com", "partner@example.com"
-            )
-
-        self.assertEqual(status, 201)
-        action = transact.call_args.kwargs["TransactItems"][0]["Put"]
-        self.assertEqual(action["Item"]["PK"], {"S": f"PAREJA#{result['coupleId']}"})
-        self.assertEqual(action["Item"]["SK"], {"S": "META"})
-
-    def test_init_serializes_keys_once_in_wire_request(self):
+    def test_transaction_serializes_keys_once_in_wire_request(self):
         session = boto3.Session(
             aws_access_key_id="testing",
             aws_secret_access_key="testing",
@@ -382,36 +416,19 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         module.dynamodb_client.meta.events.register(
             "before-call.dynamodb.TransactWriteItems", capture_request
         )
-        result, status = module.init_couple(
-            self.user1, "Uno", "Dos", self.user1["email"], self.user2["email"]
-        )
+        module._execute_transaction([module._put_action(
+            {"PK": self.couple_pk, "SK": "MESESTADO#2026-10", "version": 1}
+        )])
 
-        self.assertEqual(status, 201)
         actions = requests[0]["TransactItems"]
-        self.assertEqual(len(actions), 4)
+        self.assertEqual(len(actions), 1)
         for action in actions:
             item = action["Put"]["Item"]
             self.assertEqual(set(item["PK"]), {"S"})
             self.assertIsInstance(item["PK"]["S"], str)
             self.assertEqual(set(item["SK"]), {"S"})
             self.assertIsInstance(item["SK"]["S"], str)
-        self.assertEqual(actions[0]["Put"]["Item"]["PK"]["S"], f"PAREJA#{result['coupleId']}")
-
-    def test_init_does_not_report_non_condition_cancellation_as_duplicate(self):
-        user = {"sub": "sub-99", "email": "", "name": "Nueva"}
-        cancellation = ClientError(
-            {
-                "Error": {"Code": "TransactionCanceledException", "Message": "mock"},
-                "CancellationReasons": [{"Code": "ValidationError"}],
-            },
-            "TransactWriteItems",
-        )
-
-        with patch.object(self.handler.dynamodb_client, "transact_write_items", side_effect=cancellation):
-            with self.assertRaises(ClientError):
-                self.handler.init_couple(
-                    user, "Nueva", "Pareja", "nueva@example.com", "pareja@example.com"
-                )
+        self.assertEqual(actions[0]["Put"]["Item"]["PK"]["S"], self.couple_pk)
 
     # ── Propuestas simultáneas y silencio != consentimiento ───────────────
 

@@ -1157,7 +1157,10 @@ Resources:
       FunctionName: monthly-challenges-crud
       CodeUri: functions/MonthlyChallengesCRUD/
       Handler: handler.lambda_handler
-      Description: "Retos mensuales compartidos por una pareja (independiente de los retos eroticos)"
+      Description: "Retos mensuales compartidos por los dos usuarios del sistema"
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref MonthlyChallengesTable
@@ -1169,6 +1172,10 @@ Resources:
               Action:
                 - dynamodb:TransactWriteItems
               Resource: !GetAtt MonthlyChallengesTable.Arn
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+              Resource: !GetAtt CognitoUserPool.Arn
       Events:
         InitCouple:
           Type: HttpApi

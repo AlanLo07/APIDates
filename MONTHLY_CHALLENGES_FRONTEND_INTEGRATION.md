@@ -4,7 +4,11 @@
 
 La API base es el output `ApiUrl` del stack SAM. Todas las rutas están bajo `/monthly-challenges` y aceptan JSON. Enviar el JWT de Cognito en `Authorization: Bearer <token>` y `Content-Type: application/json`.
 
-El backend identifica al usuario mediante el claim `sub`. Si el JWT no incluye `email`, una membresía ya vinculada por `USUARIO#{sub}` sigue funcionando. `POST /monthly-challenges/init` conserva `user1Email`, `user2Email`, `user1Name` y `user2Name` en el body para mantener el `coupleId` histórico; el claim `email` del JWT es opcional. No enviar `userId`, `coupleId`, `createdBy` ni `proposedBy` para atribuir acciones. La pertenencia a pareja de este módulo es independiente de FinancesCRUD, por lo que debe inicializarse aquí también. Las operaciones de pareja requieren membresía; catálogo no requiere membresía, aunque sí la autenticación del authorizer de la API. `GET /auth/me` obtiene los atributos del perfil desde Cognito cuando no vienen en los claims.
+El backend identifica al usuario mediante el claim `sub` y consulta los dos usuarios existentes en Cognito para obtener sus correos y nombres. No crea parejas ni membresías y no requiere `init`: después de autenticarse se puede consultar directamente `GET /monthly-challenges/current`. El claim `email` es opcional. No enviar `userId`, `coupleId`, `createdBy` ni `proposedBy` para atribuir acciones. El catálogo mantiene la autenticación del authorizer de la API.
+
+El pool debe contener exactamente dos usuarios con `sub` y correos diferentes. La Lambda requiere `COGNITO_USER_POOL_ID` y permiso `cognito-idp:ListUsers`, incluidos en el template SAM. Si la configuración no cumple esta condición, las operaciones compartidas devuelven `503`. No se modifica FinancesCRUD ni la periodicidad mensual de los retos.
+
+Se conserva la partición histórica calculada a partir de ambos correos para reutilizar retos, favoritos y cupones existentes si los correos coinciden con los usados anteriormente. Los registros antiguos de pareja/membresía no se consultan ni se eliminan. Cambiar los correos cambia la partición; no hay migración automática. `POST /monthly-challenges/init` queda como consulta opcional compatible: ignora los integrantes enviados, no escribe datos y devuelve `200` con `coupleId`, `user1` y `user2` de Cognito, sin `createdAt`.
 
 Las respuestas usan el envelope habitual de API Gateway: JSON en el body y HTTP status code. Los errores tienen forma `{ "error": "..." }`.
 
@@ -24,7 +28,7 @@ La categoría `ahorro` solo etiqueta una actividad/compromiso. Este módulo no c
 
 | Método y ruta | Uso | Body / query | Respuesta |
 |---|---|---|---|
-| `POST /monthly-challenges/init` | Inicializar pareja y membresías propias del módulo | `user1Email`, `user2Email`, `user1Name`, `user2Name` | `201` y `coupleId`; `409` si emails/pareja ya registrados |
+| `POST /monthly-challenges/init` | Consulta opcional de los dos usuarios; no crea parejas | Ninguno; body anterior ignorado | `200` y `coupleId`, `user1`, `user2` |
 | `GET /monthly-challenges/current` | Consultar mes UTC actual; evalúa el plazo | Ninguno | Objeto estado mensual |
 | `GET /monthly-challenges/{monthKey}` | Consultar un mes existente, formato `YYYY-MM` | Ninguno | Objeto estado; `404` si no hay estado |
 | `POST /monthly-challenges/current/proposals` | Crear o reemplazar la propuesta del usuario en el ciclo actual | Snapshot custom o id de catálogo | Estado mensual actualizado |
@@ -161,8 +165,9 @@ Un reintento posterior devuelve `200`, el mismo cupón y `couponCreated: false`;
 ## Errores que debe manejar el cliente
 
 - `400`: validación, JSON/categoría/campos inválidos.
-- `401`: no hay JWT con `sub` y `email`.
-- `403`: usuario autenticado sin membresía de pareja en este módulo.
+- `401`: no hay JWT con `sub`.
+- `403`: el `sub` autenticado no corresponde a ninguno de los dos usuarios del pool.
+- `503`: falta configurar el pool o no contiene exactamente dos usuarios con `sub` y correos diferentes.
 - `404`: mes/elemento/propuesta/cupón inexistente o catálogo sin resultados aleatorios.
 - `409`: estado no permite la operación, propuesta ya resuelta, favorito duplicado o conflicto de concurrencia. Volver a consultar `GET /current` antes de permitir reintento.
 - `502`: error de DynamoDB; `500`: error inesperado.

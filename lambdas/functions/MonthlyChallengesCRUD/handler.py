@@ -1,13 +1,11 @@
 """
-handler.py — Retos mensuales compartidos por una pareja.
+handler.py — Retos mensuales compartidos por los dos usuarios de Cognito.
 
 Modelo (independiente de ChallengesCRUD/DiceCRUD — retos eróticos — y de
 CouponsCRUD — cuponera por usuario): no comparte datos ni estados con ellos.
 
 Dos tablas:
-- MonthlyChallengesTable: estado por pareja (PK=PAREJA#{coupleId})
-    SK=PAREJA                         -> membresía USUARIO#/EMAIL#
-    SK=META                           -> datos de la pareja (emails/nombres)
+- MonthlyChallengesTable: estado compartido (PK=PAREJA#{hash de ambos correos})
     SK=MESESTADO#{monthKey}           -> estado del mes (reto elegido, status, version)
     SK=MESPROPUESTA#{monthKey}#{cycle}#{sub}  -> propuesta de un integrante
     SK=MESELECCION#{monthKey}#{cycle}#{sub}   -> elección/voto de un integrante
@@ -60,6 +58,7 @@ serializer = TypeSerializer()
 
 TABLE_NAME = os.environ.get("MONTHLY_CHALLENGES_TABLE_NAME", "MonthlyChallengesTable")
 CATALOG_TABLE_NAME = os.environ.get("MONTHLY_CHALLENGES_CATALOG_TABLE_NAME", "MonthlyChallengesCatalogTable")
+USER_POOL_ID = os.environ.get("COGNITO_USER_POOL_ID", "")
 table = dynamodb.Table(TABLE_NAME)  # type: ignore
 catalog_table = dynamodb.Table(CATALOG_TABLE_NAME)  # type: ignore
 
@@ -154,7 +153,7 @@ def _update_action(key, expression, values, names, condition):
     }
 
 
-# ─── Autenticación y resolución de pareja (independiente de FinancesCRUD) ────
+# ─── Autenticación y usuarios compartidos (independiente de FinancesCRUD) ────
 
 
 def _get_request_user(event):
@@ -166,143 +165,54 @@ def _get_request_user(event):
     return {"sub": user_id, "email": email, "name": str(claims.get("name") or "").strip()}
 
 
-def _membership_key(prefix, identifier):
-    return {"PK": f"{prefix}#{identifier}", "SK": "PAREJA"}
-
-
-def _email_from_access_token(event):
-    headers = event.get("headers", {}) or {}
-    authorization = next(
-        (value for key, value in headers.items() if key.lower() == "authorization"),
-        "",
-    )
-    scheme, separator, access_token = str(authorization).partition(" ")
-    if not separator or scheme.casefold() != "bearer" or not access_token.strip():
-        return ""
-    try:
-        profile = cognito.get_user(AccessToken=access_token.strip())
-    except ClientError as exc:
-        log_event(
-            logger,
-            "🟡",
-            "No se pudieron recuperar atributos de Cognito",
-            error_code=exc.response.get("Error", {}).get("Code", "Unknown"),
-        )
-        return ""
-    attributes = {
-        attribute["Name"]: attribute["Value"]
-        for attribute in profile.get("UserAttributes", [])
-    }
-    return _normalize_email(attributes.get("email"))
-
-
 def _couple_id_for_emails(email1, email2):
     normalized = sorted((_normalize_email(email1), _normalize_email(email2)))
     digest = hashlib.sha256("|".join(normalized).encode("utf-8")).hexdigest()
     return digest[:24]
 
 
-def _save_user_membership(user, couple_id):
-    now = now_iso()
-    item = {**_membership_key("USUARIO", user["sub"]), "coupleId": couple_id,
-            "createdAt": now, "updatedAt": now}
-    if user.get("email"):
-        item["email"] = user["email"]
-    try:
-        table.put_item(
-            Item=item,
-            ConditionExpression=Attr("PK").not_exists() | Attr("coupleId").eq(couple_id),
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            raise ForbiddenError("El usuario ya pertenece a otra pareja de retos mensuales") from exc
-        raise
+def _system_users():
+    if not USER_POOL_ID:
+        raise ChallengeError("Falta configurar COGNITO_USER_POOL_ID", 503)
+    users = []
+    params = {"UserPoolId": USER_POOL_ID, "Limit": 3}
+    while True:
+        response = cognito.list_users(**params)
+        for profile in response.get("Users", []):
+            attributes = {attribute["Name"]: attribute["Value"]
+                          for attribute in profile.get("Attributes", [])}
+            users.append({"sub": str(attributes.get("sub") or "").strip(),
+                          "email": _normalize_email(attributes.get("email")),
+                          "name": str(attributes.get("name") or "").strip()})
+        if len(users) > 2:
+            raise ChallengeError("Los retos requieren exactamente dos usuarios en Cognito", 503)
+        token = response.get("PaginationToken")
+        if not token:
+            break
+        params["PaginationToken"] = token
+    if (len(users) != 2 or any(not user["sub"] or not user["email"] for user in users)
+            or len({user["sub"] for user in users}) != 2
+            or len({user["email"] for user in users}) != 2):
+        raise ChallengeError("Los retos requieren dos usuarios con sub y correos diferentes", 503)
+    return sorted(users, key=lambda user: user["email"])
 
 
 def _resolve_couple_context(event):
     user = _get_request_user(event)
-    user_membership = table.get_item(Key=_membership_key("USUARIO", user["sub"]), ConsistentRead=True).get("Item")
-    if user_membership:
-        user["email"] = user["email"] or _normalize_email(user_membership.get("email"))
-        if not user["email"]:
-            user["email"] = _email_from_access_token(event)
-        return f"PAREJA#{user_membership['coupleId']}", user
-
-    if not user["email"]:
-        user["email"] = _email_from_access_token(event)
-
-    if user["email"]:
-        email_membership = table.get_item(
-            Key=_membership_key("EMAIL", user["email"]), ConsistentRead=True
-        ).get("Item")
-        if email_membership:
-            couple_id = email_membership["coupleId"]
-            _save_user_membership(user, couple_id)
-            return f"PAREJA#{couple_id}", user
-
-    raise ForbiddenError("El usuario no pertenece a una pareja de retos mensuales")
-
-
-def init_couple(user, user1_name, user2_name, user1_email, user2_email):
-    now = now_iso()
-    normalized_emails = {_normalize_email(user1_email), _normalize_email(user2_email)}
-    if "" in normalized_emails or len(normalized_emails) != 2:
-        return {"error": "Los correos de los integrantes deben ser válidos y diferentes"}, 400
-    if user["email"] and user["email"] not in normalized_emails:
-        return {"error": "El usuario autenticado debe ser uno de los integrantes"}, 403
-
-    couple_id = _couple_id_for_emails(user1_email, user2_email)
-    couple_pk = f"PAREJA#{couple_id}"
-    couple_item = {
-        "PK": couple_pk, "SK": "META", "coupleId": couple_id,
-        "user1": {"name": user1_name, "email": _normalize_email(user1_email)},
-        "user2": {"name": user2_name, "email": _normalize_email(user2_email)},
-        "createdAt": now, "updatedAt": now,
-    }
-    membership_items = [
-        {**_membership_key("EMAIL", email), "coupleId": couple_id, "createdAt": now, "updatedAt": now}
-        for email in normalized_emails
-    ]
-    user_membership = {**_membership_key("USUARIO", user["sub"]), "coupleId": couple_id,
-                       "createdAt": now, "updatedAt": now}
-    if user.get("email"):
-        user_membership["email"] = user["email"]
-    membership_items.append(user_membership)
-    try:
-        _execute_transaction([
-            _put_action(item)
-            for item in [couple_item, *membership_items]
-        ])
-        log_event(logger, "🟢", "Pareja de retos mensuales inicializada", couple_ref=couple_id[-8:])
-        return {"coupleId": couple_id, "user1": {"name": user1_name, "email": user1_email},
-                "user2": {"name": user2_name, "email": user2_email}, "createdAt": now}, 201
-    except ClientError as exc:
-        error_code = exc.response.get("Error", {}).get("Code", "Unknown")
-        cancellation_details = [
-            {
-                "action_index": index,
-                "action_type": "Put",
-                "reason_code": reason.get("Code", "Unknown"),
-                "reason": str(reason.get("Message", ""))[:300],
-            }
-            for index, reason in enumerate(exc.response.get("CancellationReasons", []))
-        ]
-        cancellation_codes = [detail["reason_code"] for detail in cancellation_details]
-        if error_code == "TransactionCanceledException":
-            log_event(
-                logger,
-                "🔴",
-                "Transacción de inicialización cancelada",
-                cancellation_details=cancellation_details,
-            )
-        if error_code == "ConditionalCheckFailedException" or "ConditionalCheckFailed" in cancellation_codes:
-            return {"error": "La pareja o uno de sus integrantes ya está registrado"}, 409
-        log_event(logger, "🔴", "Error inicializando pareja", error_code=error_code)
-        raise
+    users = _system_users()
+    profile = next((profile for profile in users if profile["sub"] == user["sub"]), None)
+    if profile is None:
+        raise ForbiddenError("El usuario no es uno de los dos usuarios del sistema")
+    couple_id = _couple_id_for_emails(users[0]["email"], users[1]["email"])
+    return f"PAREJA#{couple_id}", profile
 
 
 def get_couple_meta(couple_pk):
-    return table.get_item(Key={"PK": couple_pk, "SK": "META"}).get("Item")
+    users = _system_users()
+    couple_id = _couple_id_for_emails(users[0]["email"], users[1]["email"])
+    if couple_pk != f"PAREJA#{couple_id}":
+        return None
+    return {"coupleId": couple_id, "user1": users[0], "user2": users[1]}
 
 
 def _partner_email(couple_meta, user_email):
@@ -1037,18 +947,8 @@ def get_month_status(couple_pk, user, month_key):
 def _handle_init_route(method, path, event, body):
     if method != "POST" or path != "/monthly-challenges/init":
         return None
-    user = _get_request_user(event)
-    required = {"user1Email", "user2Email", "user1Name", "user2Name"}
-    if not isinstance(body, dict) or not required.issubset(body):
-        return build_response(400, {"error": "Faltan campos requeridos"})
-    result, status = init_couple(
-        user,
-        body["user1Name"],
-        body["user2Name"],
-        body["user1Email"],
-        body["user2Email"],
-    )
-    return build_response(status, result)
+    couple_pk, _user = _resolve_couple_context(event)
+    return build_response(200, get_couple_meta(couple_pk) or {})
 
 
 def _handle_catalog_routes(method, path, event, body, query_params):
@@ -1103,7 +1003,7 @@ def lambda_handler(event, context):
         if catalog_response is not None:
             return catalog_response
 
-        # ──────── Rutas de pareja (requieren membresía) ──────────────────────
+        # ──────── Rutas compartidas de los dos usuarios ─────────────────────
         couple_pk, user = _resolve_couple_context(event)
 
         if path == "/monthly-challenges/current" and method == "GET":
