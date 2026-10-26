@@ -253,6 +253,7 @@ Resources:
           - Content-Type
           - X-Api-Key
           - Authorization
+          - Idempotency-Key
       Auth:
         Authorizers:
           CognitoJwtAuthorizer:
