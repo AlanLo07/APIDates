@@ -62,6 +62,69 @@ class FinancesHandlerTests(unittest.TestCase):
         self.assertEqual(response["statusCode"], 401)
         self.assertEqual(json.loads(response["body"])["error"], "Usuario no autenticado")
 
+    def test_missing_goal_idempotency_key_is_logged_without_sensitive_data(self):
+        request = event(path="/finances/metas", method="POST",
+                        body={"name": "Ir a Argentina", "targetAmount": 50000})
+        request["headers"] = {"Authorization": "Bearer secret-token"}
+        request["requestContext"]["requestId"] = "api-request-1"
+        user = {"sub": "user-1", "email": "uno@example.com"}
+        with (
+            patch.object(self.handler, "_resolve_couple_context", return_value=("PAREJA#couple-1", user)),
+            patch.object(self.handler, "logger") as logger,
+        ):
+            response = self.handler.lambda_handler(request, lambda_context())
+
+        self.assertEqual(response["statusCode"], 400)
+        logs = [json.loads(entry.args[1]) for entry in logger.log.call_args_list]
+        rejection = next(item for item in logs if item["message"] == "Operacion de ahorros rechazada")
+        self.assertIn("Idempotency-Key", rejection["reason"])
+        self.assertEqual(rejection["api_request_id"], "api-request-1")
+        self.assertTrue(logs[0]["authorization_present"])
+        self.assertFalse(logs[0]["idempotency_key_present"])
+        for sensitive_value in ("secret-token", "Ir a Argentina", "50000", "uno@example.com"):
+            self.assertNotIn(sensitive_value, str(logger.mock_calls))
+
+    def test_goal_aws_error_logs_only_safe_service_metadata(self):
+        request = event(path="/finances/metas", method="POST",
+                        body={"name": "Ir a Argentina", "targetAmount": 50000})
+        request["headers"] = {"Idempotency-Key": "private-request-key"}
+        error = ClientError({
+            "Error": {"Code": "AccessDeniedException", "Message": "sensitive-service-detail"},
+            "ResponseMetadata": {"RequestId": "aws-request-1"},
+        }, "TransactWriteItems")
+        with (
+            patch.object(self.handler, "_resolve_couple_context", return_value=("PAREJA#couple-1", {})),
+            patch.object(self.handler, "create_savings_goal", side_effect=error),
+            patch.object(self.handler, "logger") as logger,
+        ):
+            response = self.handler.lambda_handler(request, lambda_context())
+
+        self.assertEqual(response["statusCode"], 500)
+        failure = json.loads(logger.log.call_args.args[1])
+        self.assertEqual(failure["level"], "🔴")
+        self.assertEqual(failure["error_code"], "AccessDeniedException")
+        self.assertEqual(failure["operation"], "TransactWriteItems")
+        self.assertEqual(failure["aws_request_id"], "aws-request-1")
+        self.assertEqual(failure["stage"], "savings_route")
+        self.assertNotIn("sensitive-service-detail", str(logger.mock_calls))
+        self.assertNotIn("private-request-key", str(logger.mock_calls))
+
+    def test_successful_goal_response_is_logged(self):
+        request = event(path="/finances/metas", method="POST",
+                        body={"name": "Ir a Argentina", "targetAmount": 50000})
+        request["headers"] = {"Idempotency-Key": "request-key"}
+        with (
+            patch.object(self.handler, "_resolve_couple_context", return_value=("PAREJA#couple-1", {})),
+            patch.object(self.handler, "create_savings_goal", return_value=({"goalId": "goal-1"}, 201)),
+            patch.object(self.handler, "logger") as logger,
+        ):
+            response = self.handler.lambda_handler(request, lambda_context())
+
+        self.assertEqual(response["statusCode"], 201)
+        completion = json.loads(logger.log.call_args.args[1])
+        self.assertEqual(completion["message"], "Respuesta de creacion de meta preparada")
+        self.assertEqual(completion["status_code"], 201)
+
     def test_user_from_another_couple_is_rejected(self):
         self.table.get_item.side_effect = [{}, {}, {}]
 

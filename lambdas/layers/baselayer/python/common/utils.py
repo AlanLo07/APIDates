@@ -26,7 +26,7 @@ def log_event(logger, indicator: str, message: str, **fields) -> None:
         raise ValueError(f"Indicador de log no soportado: {indicator}")
 
     payload = {"level": indicator, "message": message, **fields}
-    logger.log(LOG_LEVELS[indicator], json.dumps(payload, ensure_ascii=False))
+    logger.log(LOG_LEVELS[indicator], json.dumps(payload, cls=DecimalEncoder, ensure_ascii=False))
 
 
 def scan_all(table, filter_expression=None, **scan_kwargs) -> list[dict]:

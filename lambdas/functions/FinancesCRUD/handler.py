@@ -1441,6 +1441,8 @@ def create_savings_goal(couple_pk, user, data, idempotency_hash):
     result, status, replay = _run_idempotent_transaction(
         couple_pk, idempotency_hash, request_hash, build_transaction
     )
+    log_event(logger, "🟢", "Transaccion de creacion de meta confirmada",
+              couple_ref=couple_pk[-8:], status_code=status, idempotent_replay=replay)
     response = {**result, "summary": get_savings_summary(couple_pk)}
     if replay:
         response["idempotentReplay"] = True
@@ -1964,9 +1966,18 @@ def _handle_savings_routes(method, path, event, body, couple_pk, user):
     if path == "/finances/metas" and method == "GET":
         return build_response(200, get_savings_summary(couple_pk))
     if path == "/finances/metas" and method == "POST":
+        request_fields = {
+            "api_request_id": (event.get("requestContext") or {}).get("requestId"),
+            "couple_ref": couple_pk[-8:],
+        }
+        log_event(logger, "🔵", "Verificando idempotencia para crear meta", **request_fields)
         key_hash = _request_idempotency_key(event)
+        log_event(logger, "🔵", "Validando y creando meta de ahorro", **request_fields)
         result, status = create_savings_goal(couple_pk, user, body, key_hash)
-        return build_response(status, result)
+        response = build_response(status, result)
+        log_event(logger, "🟢", "Respuesta de creacion de meta preparada",
+                  status_code=status, **request_fields)
+        return response
     if path == "/finances/metas/reordenar" and method == "POST":
         if "goalIds" not in body:
             return build_response(400, {"error": "goalIds es requerido"})
@@ -1994,24 +2005,68 @@ def _handle_savings_routes(method, path, event, body, couple_pk, user):
     return None
 
 
+def _log_finances_request(event, context, method, path):
+    request_fields = {
+        "method": method,
+        "path": path,
+        "function": getattr(context, "function_name", "unknown"),
+        "request_id": getattr(context, "aws_request_id", None),
+        "api_request_id": (event.get("requestContext") or {}).get("requestId"),
+    }
+    headers = event.get("headers") or {}
+    claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("jwt", {}).get("claims") or {}
+    log_event(logger, "⚪️", "Solicitud FinancesCRUD", **request_fields,
+              authorization_present=any(name.casefold() == "authorization" for name in headers),
+              jwt_sub_present=bool(claims.get("sub")),
+              idempotency_key_present=any(name.casefold() == "idempotency-key" for name in headers))
+    return request_fields
+
+
+def _finances_error_response(error, request_fields, stage):
+    if isinstance(error, UnauthenticatedError):
+        log_event(logger, "🟡", "Solicitud de finanzas sin usuario autenticado",
+                  **request_fields, stage=stage, status_code=401)
+        return build_response(401, {"error": str(error)})
+    if isinstance(error, ForbiddenError):
+        log_event(logger, "🟡", "Acceso a finanzas denegado por membresia",
+                  **request_fields, stage=stage, status_code=403)
+        return build_response(403, {"error": str(error)})
+    if isinstance(error, SavingsError):
+        log_event(logger, "🔴" if error.status_code >= 500 else "🟡", "Operacion de ahorros rechazada",
+                  **request_fields, stage=stage, status_code=error.status_code, reason=str(error))
+        return build_response(error.status_code, {"error": str(error)})
+    if isinstance(error, ValueError):
+        log_event(logger, "🟡", "Validacion de solicitud de finanzas fallida",
+                  **request_fields, stage=stage, status_code=400, error_type=type(error).__name__)
+        return build_response(400, {"error": str(error)})
+    if isinstance(error, ClientError):
+        log_event(logger, "🔴", "Error de servicio AWS en FinancesCRUD",
+                  **request_fields, stage=stage, status_code=500,
+                  error_code=error.response.get("Error", {}).get("Code", "Unknown"),
+                  operation=error.operation_name,
+                  aws_request_id=error.response.get("ResponseMetadata", {}).get("RequestId"),
+                  cancellation_codes=[reason.get("Code") for reason in error.response.get("CancellationReasons", [])])
+    else:
+        logger.exception(json.dumps({"level": "🔴", "message": "Error inesperado en FinancesCRUD",
+                                     **request_fields, "stage": stage, "status_code": 500}, ensure_ascii=False))
+    return build_response(500, {"error": "Error interno del servidor"})
+
+
 def lambda_handler(event, context):
     """🔵 Maneja todas las rutas de la API de finanzas."""
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
     path = event.get("rawPath", "")
+    request_fields = _log_finances_request(event, context, method, path)
 
-    logger.info(json.dumps({
-        "level": "⚪️",
-        "message": "Solicitud FinancesCRUD",
-        "method": method,
-        "path": path,
-        "function": getattr(context, "function_name", "unknown"),
-    }, ensure_ascii=False))
-
+    stage = "parse_body"
     try:
         body = parse_body(event)
         if not isinstance(body, dict):
+            log_event(logger, "🟡", "Body de finanzas no es un objeto JSON",
+                      **request_fields, stage=stage, status_code=400)
             return build_response(400, {"error": "El body debe ser un objeto JSON"})
 
+        stage = "authentication_and_membership"
         # ──────── POST /finances/init ─────────────────────────────────────────
         if method == "POST" and path == "/finances/init":
             user = _get_request_user(event)
@@ -2031,6 +2086,9 @@ def lambda_handler(event, context):
             return build_response(status, result)
 
         couple_pk, user = _resolve_couple_context(event)
+        log_event(logger, "🔵", "Autenticacion y membresia de finanzas resueltas",
+              **request_fields, couple_ref=couple_pk[-8:])
+        stage = "routing"
 
         # ──────── GET /finances ──────────────────────────────────────────────
         if method == "GET" and path == "/finances":
@@ -2044,9 +2102,11 @@ def lambda_handler(event, context):
             result, status = get_summary(couple_pk)
             return build_response(status, result)
 
+        stage = "savings_route"
         savings_response = _handle_savings_routes(method, path, event, body, couple_pk, user)
         if savings_response is not None:
             return savings_response
+        stage = "routing"
 
         # ──────── POST /finances/gastos ──────────────────────────────────────
         if method == "POST" and path == "/finances/gastos":
@@ -2117,14 +2177,5 @@ def lambda_handler(event, context):
 
         return build_response(404, {"error": "Ruta no encontrada"})
 
-    except UnauthenticatedError as e:
-        return build_response(401, {"error": str(e)})
-    except ForbiddenError as e:
-        return build_response(403, {"error": str(e)})
-    except SavingsError as e:
-        return build_response(e.status_code, {"error": str(e)})
-    except ValueError as e:
-        return build_response(400, {"error": str(e)})
-    except Exception:
-        logger.exception("🔴 Error inesperado en FinancesCRUD")
-        return build_response(500, {"error": "Error interno del servidor"})
+    except Exception as error:
+        return _finances_error_response(error, request_fields, stage)

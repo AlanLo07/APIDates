@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -431,6 +432,37 @@ class MonthlyChallengesHandlerTests(unittest.TestCase):
         self.assertEqual(actions[0]["Put"]["Item"]["PK"]["S"], self.couple_pk)
 
     # ── Propuestas simultáneas y silencio != consentimiento ───────────────
+
+    def test_log_event_serializes_dynamodb_decimals(self):
+        logger = MagicMock()
+        self.handler.log_event(logger, "🟢", "Propuesta de reto mensual registrada",
+                               cycle=Decimal("1"), metadata={"amount": Decimal("1.5")})
+
+        logger.log.assert_called_once()
+        payload = json.loads(logger.log.call_args.args[1])
+        self.assertEqual(payload["level"], "🟢")
+        self.assertEqual(payload["message"], "Propuesta de reto mensual registrada")
+        self.assertEqual(payload["cycle"], 1)
+        self.assertIsInstance(payload["cycle"], int)
+        self.assertEqual(payload["metadata"]["amount"], 1.5)
+
+    def test_custom_proposal_succeeds_with_dynamodb_decimal_cycle(self):
+        month = self.handler._load_current_month(self.couple_pk)
+        month["cycle"] = Decimal(str(month["cycle"]))
+        self.table.put_item(Item=month)
+        proposal = {"source": "custom", "title": "Ir a museo de noche",
+                    "description": "museos de noche", "category": "actividades_juntos"}
+
+        state, status = self.handler.create_or_update_proposal(
+            self.couple_pk, self.user1, proposal
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(state["proposals"]), 1)
+        self.assertEqual(state["proposals"][0]["title"], proposal["title"])
+        stored = self.handler._list_proposals(self.couple_pk, month["monthKey"], month["cycle"])
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["title"], proposal["title"])
 
     def test_simultaneous_proposals_are_recorded_independently(self):
         self.handler.create_or_update_proposal(self.couple_pk, self.user1,
