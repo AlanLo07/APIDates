@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
+import boto3
 from botocore.exceptions import ClientError
 
 
@@ -22,7 +23,11 @@ os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
 def load_handler():
     resource = MagicMock()
     resource.Table.return_value = MagicMock()
-    with patch("boto3.resource", return_value=resource):
+
+    def mock_client(service_name):
+        return resource.meta.client if service_name == "dynamodb" else MagicMock()
+
+    with patch("boto3.resource", return_value=resource), patch("boto3.client", side_effect=mock_client):
         spec = importlib.util.spec_from_file_location("finances_handler_test", HANDLER_PATH)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
@@ -649,12 +654,80 @@ class FinancesHandlerTests(unittest.TestCase):
         link_items = [action["Put"]["Item"] for action in captured["actions"] if "Put" in action and action["Put"]["Item"].get("SK", "").startswith("VINCULO_BODA#")]
         self.assertEqual(link_items[0]["SK"], "VINCULO_BODA#wedding-1")
 
+    def test_savings_transaction_serializes_dynamodb_keys_once(self):
+        session = boto3.Session(
+            aws_access_key_id="testing",
+            aws_secret_access_key="testing",
+            region_name="us-east-1",
+        )
+        resource = session.resource("dynamodb")
+        spec = importlib.util.spec_from_file_location("finances_wire_test", HANDLER_PATH)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        with patch("boto3.resource", return_value=resource), patch("boto3.client", side_effect=session.client):
+            spec.loader.exec_module(module)
+
+        requests = []
+
+        def capture_request(params, **kwargs):
+            requests.append(json.loads(params["body"]))
+            return SimpleNamespace(status_code=200), {}
+
+        module.dynamodb_client.meta.events.register("before-call.dynamodb.TransactWriteItems", capture_request)
+        module._execute_savings_transaction([
+            module._config_update_action("PAREJA#DEFAULT", {"version": 0}, ["goal-1"], "2026-10-26"),
+            module._put_action({"PK": "PAREJA#DEFAULT", "SK": "META_AHORRO#goal-1",
+                                "targetAmount": Decimal("50000")}),
+        ])
+
+        self.assertEqual(len(requests), 1)
+        actions = requests[0]["TransactItems"]
+        self.assertEqual(actions[0]["Update"]["Key"]["PK"], {"S": "PAREJA#DEFAULT"})
+        self.assertEqual(actions[0]["Update"]["ExpressionAttributeValues"][":expectedVersion"], {"N": "0"})
+        self.assertEqual(actions[1]["Put"]["Item"]["PK"], {"S": "PAREJA#DEFAULT"})
+        self.assertEqual(actions[1]["Put"]["Item"]["targetAmount"], {"N": "50000"})
+
+    def test_transaction_validation_failure_is_not_reported_as_concurrency(self):
+        cancellation = ClientError({
+            "Error": {"Code": "TransactionCanceledException", "Message": "private-service-detail"},
+            "CancellationReasons": [{"Code": "ValidationError", "Message": "private-item-detail"}],
+        }, "TransactWriteItems")
+        builder = MagicMock(return_value=([], {}, 201))
+        with (
+            patch.object(self.handler, "_get_idempotency_record", return_value=None),
+            patch.object(self.handler, "_execute_savings_transaction", side_effect=cancellation) as execute,
+            patch.object(self.handler, "logger") as logger,
+            self.assertRaises(ClientError) as raised,
+        ):
+            self.handler._run_idempotent_transaction("PAREJA#DEFAULT", "key-hash", "payload-hash", builder)
+
+        self.assertIs(raised.exception, cancellation)
+        execute.assert_called_once()
+        failure = json.loads(logger.log.call_args.args[1])
+        self.assertEqual(failure["cancellation_codes"], ["ValidationError"])
+        self.assertFalse(failure["retryable"])
+        self.assertNotIn("private-service-detail", str(logger.mock_calls))
+        self.assertNotIn("private-item-detail", str(logger.mock_calls))
+
+    def test_transaction_without_cancellation_reasons_is_not_assumed_concurrent(self):
+        cancellation = ClientError({"Error": {"Code": "TransactionCanceledException"}}, "TransactWriteItems")
+        with (
+            patch.object(self.handler, "_get_idempotency_record", return_value=None),
+            patch.object(self.handler, "_execute_savings_transaction", side_effect=cancellation) as execute,
+            self.assertRaises(ClientError),
+        ):
+            self.handler._run_idempotent_transaction(
+                "PAREJA#DEFAULT", "key-hash", "payload-hash", MagicMock(return_value=([], {}, 201))
+            )
+        execute.assert_called_once()
+
     def test_concurrent_contributions_retry_against_latest_balance(self):
         initial_state = self._savings_state(accumulated="0", version=1)
         concurrently_updated_state = self._savings_state(accumulated="40", version=2)
         user = {"sub": "user-1", "email": "uno@example.com"}
         cancellation = ClientError(
-            {"Error": {"Code": "TransactionCanceledException", "Message": "conflict"}},
+            {"Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+             "CancellationReasons": [{"Code": "ConditionalCheckFailed"}]},
             "TransactWriteItems",
         )
         states = [initial_state, concurrently_updated_state]

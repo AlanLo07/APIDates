@@ -51,7 +51,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
-dynamodb_client = cast(Any, dynamodb.meta).client
+dynamodb_client = boto3.client("dynamodb")
 cognito = boto3.client("cognito-idp")
 TABLE_NAME = os.environ.get("FINANCES_TABLE_NAME", "FinancesTable")
 table = dynamodb.Table(TABLE_NAME)  # type: ignore
@@ -1308,7 +1308,7 @@ def _run_idempotent_transaction(couple_pk, key_hash, request_hash, build_transac
     existing = _get_idempotency_record(couple_pk, key_hash)
     if existing:
         return _idempotent_replay(existing, request_hash)
-    for _ in range(MAX_SAVINGS_RETRIES):
+    for attempt in range(1, MAX_SAVINGS_RETRIES + 1):
         actions, result, status_code = build_transaction()
         now = get_iso_timestamp()
         actions.append(
@@ -1324,7 +1324,22 @@ def _run_idempotent_transaction(couple_pk, key_hash, request_hash, build_transac
             if existing:
                 return _idempotent_replay(existing, request_hash)
             error_code = exc.response.get("Error", {}).get("Code", "Unknown")
-            if error_code in {"TransactionCanceledException", "ConditionalCheckFailedException"}:
+            cancellation_codes = [
+                reason.get("Code", "Unknown")
+                for reason in exc.response.get("CancellationReasons", [])
+            ]
+            active_codes = set(cancellation_codes) - {"None"}
+            retryable = error_code == "ConditionalCheckFailedException" or (
+                error_code == "TransactionCanceledException"
+                and bool(active_codes)
+                and active_codes <= {"ConditionalCheckFailed", "TransactionConflict"}
+            )
+            log_event(logger, "🟡" if retryable else "🔴", "Transaccion de ahorros fallida",
+                      couple_ref=couple_pk[-8:], attempt=attempt, max_attempts=MAX_SAVINGS_RETRIES,
+                      error_code=error_code, cancellation_codes=cancellation_codes,
+                      retryable=retryable,
+                      aws_request_id=exc.response.get("ResponseMetadata", {}).get("RequestId"))
+            if retryable:
                 continue
             raise
     raise SavingsError("Conflicto concurrente; vuelve a intentar la operación", 409)
