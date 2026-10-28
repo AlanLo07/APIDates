@@ -27,48 +27,16 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+from common.checklists import VALID_KINDS, VALID_PRIORITIES, build_checklist_records, checklist_puts, write_transaction
 from common.utils import build_response, get_path_param, parse_body, query_all  # type: ignore
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
+dynamodb_client = boto3.client("dynamodb")
 TABLE_NAME = os.environ.get("CHECKLISTS_TABLE_NAME", "ChecklistsTable")
 table = dynamodb.Table(TABLE_NAME)  # type: ignore
-
-VALID_KINDS = {"supermercado", "viaje", "deseos", "personalizado"}
-VALID_PRIORITIES = {"alta", "media", "baja"}
-
-KIND_DEFAULTS = {
-    "supermercado": {"emoji": "🛒", "colorValue": 0xFF4CAF50, "usaGrupos": True},
-    "viaje": {"emoji": "🧳", "colorValue": 0xFFFF8A65, "usaGrupos": True},
-    "deseos": {"emoji": "⭐", "colorValue": 0xFFAB47BC, "usaGrupos": False},
-    "personalizado": {"emoji": "📋", "colorValue": 0xFF6A88D6, "usaGrupos": False},
-}
-
-DEFAULT_GROUPS_BY_KIND = {
-    "supermercado": [
-        {"nombre": "Frutas y verduras", "emoji": "🥦"},
-        {"nombre": "Lácteos", "emoji": "🥛"},
-        {"nombre": "Carnes y pescados", "emoji": "🍗"},
-        {"nombre": "Panadería", "emoji": "🍞"},
-        {"nombre": "Despensa", "emoji": "🥫"},
-        {"nombre": "Bebidas", "emoji": "🥤"},
-        {"nombre": "Congelados", "emoji": "🧊"},
-        {"nombre": "Limpieza", "emoji": "🧴"},
-        {"nombre": "Cuidado personal", "emoji": "🧼"},
-        {"nombre": "Otros", "emoji": "📦"},
-    ],
-    "viaje": [
-        {"nombre": "Ropa", "emoji": "👕"},
-        {"nombre": "Documentos", "emoji": "🛂"},
-        {"nombre": "Dinero y tarjetas", "emoji": "💳"},
-        {"nombre": "Cosméticos y aseo", "emoji": "🧴"},
-        {"nombre": "Electrónica", "emoji": "🔌"},
-        {"nombre": "Salud", "emoji": "💊"},
-        {"nombre": "Otros", "emoji": "🎒"},
-    ],
-}
 
 # Checklists principales, creadas una sola vez vía POST /checklists/seed-defaults
 DEFAULT_CHECKLISTS = [
@@ -182,6 +150,10 @@ def lambda_handler(event, context):
         logger.warning(json.dumps({"level": "🟡", "message": str(exc)}))
         return build_response(400, {"error": str(exc)})
     except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            reasons = exc.response.get("CancellationReasons", [])
+            if any(reason.get("Code") in {"ConditionalCheckFailed", "TransactionConflict"} for reason in reasons):
+                return build_response(409, {"error": "El checklist ya existe o hubo un conflicto; vuelve a consultar antes de reintentar"})
         logger.error(
             json.dumps(
                 {
@@ -224,7 +196,12 @@ def seed_default_checklists():
             )
             created.append(default["id"])
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            code = exc.response.get("Error", {}).get("Code")
+            reasons = exc.response.get("CancellationReasons", [])
+            if code == "ConditionalCheckFailedException" or (
+                code == "TransactionCanceledException"
+                and reasons and reasons[0].get("Code") == "ConditionalCheckFailed"
+            ):
                 skipped.append(default["id"])
             else:
                 raise
@@ -235,63 +212,25 @@ def seed_default_checklists():
 
 
 def create_checklist(data: dict, is_default: bool = False):
-    if not isinstance(data, dict):
-        raise ValueError("El body debe ser un objeto JSON")
-    if not _clean_str(data.get("titulo")):
-        raise ValueError("El campo 'titulo' es requerido")
-
-    kind = data.get("kind") or "personalizado"
-    if kind not in VALID_KINDS:
-        raise ValueError(f"'kind' inválido. Opciones: {', '.join(sorted(VALID_KINDS))}")
-
-    defaults = KIND_DEFAULTS[kind]
-    checklist_id = data.get("id") or data.get("checklistId") or str(uuid.uuid4())
-    usa_grupos = bool(data["usaGrupos"]) if "usaGrupos" in data else defaults["usaGrupos"]
-    timestamp = _utc_now()
-
-    item = {
-        "pk": _pk(checklist_id),
-        "sk": "META",
-        "id": checklist_id,
-        "checklistId": checklist_id,
-        "entityType": "checklist_board",
-        "titulo": _clean_str(data.get("titulo")),
-        "kind": kind,
-        "emoji": _clean_str(data.get("emoji")) or defaults["emoji"],
-        "colorValue": _to_int(data.get("colorValue", defaults["colorValue"]), "colorValue"),
-        "usaGrupos": usa_grupos,
-        "isDefault": bool(is_default),
-        "createdAt": timestamp,
-        "updatedAt": timestamp,
-    }
-
-    table.put_item(
-        Item=item,
-        ConditionExpression="attribute_not_exists(pk) AND attribute_not_exists(sk)",
-    )
-
-    grupos_creadas = []
-    grupos_payload = data.get("grupos")
-    if not isinstance(grupos_payload, list) or not grupos_payload:
-        grupos_payload = DEFAULT_GROUPS_BY_KIND.get(kind, []) if usa_grupos else []
-
-    for orden, grupo_data in enumerate(grupos_payload):
-        grupo_item = _create_group_item(checklist_id, grupo_data, orden)
-        grupos_creadas.append(grupo_item["id"])
-
+    records = build_checklist_records(data, is_default)
+    item = records[0]
+    checklist_id = item["checklistId"]
+    write_transaction(dynamodb_client, checklist_puts(TABLE_NAME, records))
+    grupos_creadas = [record["id"] for record in records if record["entityType"] == "checklist_grupo"]
+    items_creados = [record["id"] for record in records if record["entityType"] == "checklist_item"]
     logger.info(
         json.dumps(
             {
                 "level": "🟢",
                 "message": "Checklist creado",
                 "checklistId": checklist_id,
-                "kind": kind,
+                "kind": item["kind"],
                 "gruposCreados": len(grupos_creadas),
             }
         )
     )
     return build_response(
-        201, {"message": "Checklist creado", "checklistId": checklist_id, "grupos": grupos_creadas}
+        201, {"message": "Checklist creado", "checklistId": checklist_id, "grupos": grupos_creadas, "items": items_creados}
     )
 
 

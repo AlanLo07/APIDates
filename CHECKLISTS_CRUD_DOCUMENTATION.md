@@ -2,6 +2,187 @@
 
 Esta guia describe el contrato entre Flutter y el backend para checklists de supermercado, viaje, lista de deseos/compras y listas personalizadas.
 
+## Checklists vinculados a citas
+
+La cita de tipo `evento` guarda exclusivamente `checklistId` (string o `null`), no una copia de los items. Los checklists se almacenan en `ChecklistsTable` y se gestionan mediante los endpoints existentes de `/checklists`.
+
+Los endpoints siguen protegidos por Cognito. Enviar `Authorization: Bearer <token>` y, cuando haya body, `Content-Type: application/json`.
+
+### Servicios modificados
+
+| Metodo | Ruta | Cambio |
+|---|---|---|
+| POST | `/citas` | Permite omitir checklist, vincular uno existente o crear uno nuevo |
+| PUT | `/citas/{id}` | Permite conservar, cambiar, crear o desvincular el checklist |
+| GET | `/citas/{id}` | Devuelve `checklistId` para los eventos nuevos, sin expandir el checklist |
+| GET | `/citas?type=evento` | Cada evento nuevo contiene `checklistId`; mantiene su respuesta como array |
+| POST | `/checklists` | Acepta `items` iniciales, ademas de `grupos`; creacion atomica |
+
+No se agregan rutas. GET de citas conserva las rutas y la estructura de respuesta existentes; cambia el modelo persistido por POST/PUT.
+
+### Crear cita y vincular un checklist existente
+
+`POST /citas`
+
+```json
+{
+  "type": "evento",
+  "title": "Viaje de fin de semana",
+  "description": "Preparar equipaje",
+  "date": "31-10-2026",
+  "checklistId": "default-viaje"
+}
+```
+
+Respuesta `201`:
+
+```json
+{
+  "message": "Cita creada",
+  "id": "uuid-cita",
+  "type": "evento",
+  "checklistId": "default-viaje"
+}
+```
+
+La existencia del checklist se comprueba dentro de la misma transaccion que guarda la cita. Un ID inexistente devuelve `404` y no crea la cita. No se clona ni se reinicia el checklist seleccionado.
+
+### Crear cita y un checklist nuevo
+
+`POST /citas`
+
+```json
+{
+  "type": "evento",
+  "title": "Picnic",
+  "description": "Salida al parque",
+  "date": "31-10-2026",
+  "checklist": {
+    "titulo": "Preparativos del picnic",
+    "kind": "personalizado",
+    "usaGrupos": true,
+    "grupos": [
+      {"id": "comida", "nombre": "Comida", "orden": 0}
+    ],
+    "items": [
+      {
+        "nombre": "Sandwiches",
+        "groupId": "comida",
+        "comprado": false,
+        "prioridad": "alta",
+        "prioridadOrden": 1,
+        "nota": "Para dos personas"
+      },
+      {"nombre": "Manta", "comprado": false}
+    ]
+  }
+}
+```
+
+Respuesta `201`:
+
+```json
+{
+  "message": "Cita creada",
+  "id": "uuid-cita",
+  "type": "evento",
+  "checklistId": "uuid-checklist-nuevo"
+}
+```
+
+El objeto `checklist` es solo de entrada. La cita guarda `checklistId`; la cabecera, grupos e items se guardan en la tabla de checklists. Todos esos registros y la cita se escriben en una sola transaccion: si falla, no se guarda ninguna parte. El checklist creado aparece en `GET /checklists` mediante el indice existente (puede haber un breve retraso por consistencia eventual).
+
+`checklist` acepta el mismo body que `POST /checklists`: `titulo` obligatorio; `kind`, `emoji`, `colorValue`, `usaGrupos`, `grupos`, `items`, `id`/`checklistId` opcionales. No requiere items ni grupos. Si los items referencian grupos iniciales, enviar IDs explicitos para esos grupos. No se aceptan IDs de grupos ajenos al checklist.
+
+### Crear sin checklist
+
+Omitir tanto `checklistId` como `checklist`, o enviar `checklistId: null`. En un evento nuevo, la respuesta y el registro tendran `checklistId: null`.
+
+### Editar el vinculo
+
+`PUT /citas/{id}` conserva su actualizacion parcial: no requiere reenviar todos los campos de la cita.
+
+| Body enviado | Resultado |
+|---|---|
+| `{"title":"Otro titulo"}` | Conserva el checklist actual |
+| `{"checklistId":"otro-id"}` | Vincula otro checklist existente |
+| `{"checklistId":null}` | Desvincula el checklist |
+| `{"checklist":{"titulo":"Nueva lista","items":[{"nombre":"Reservar"}]}}` | Crea y vincula un checklist nuevo atomicamente |
+
+Respuesta `200`:
+
+```json
+{
+  "message": "Cita actualizada",
+  "id": "uuid-cita",
+  "checklistId": "id-vinculado-o-null"
+}
+```
+
+En la respuesta real, `checklistId` es el string vinculado o el valor JSON `null`, no la cadena `"null"`.
+
+Desvincular, reemplazar el vinculo o borrar una cita **no elimina** ningun checklist. Al cambiar una cita a un tipo distinto de `evento`, se elimina su referencia, no el checklist.
+
+### Consultar y modificar desde el frontend
+
+1. Cargar opciones con `GET /checklists` (respuesta `{items, count}`).
+2. Crear o editar la cita usando una sola alternativa: `checklistId` o `checklist`.
+3. Guardar el `checklistId` devuelto por POST/PUT.
+4. Consultar el detalle con `GET /checklists/{checklistId}` (respuesta `{checklist, grupos, items, resumen}`).
+5. Crear items con `POST /checklists/{checklistId}/items`; editar con `PUT /checklists/{checklistId}/items/{itemId}`.
+6. Cambiar estado con `PATCH /checklists/{checklistId}/items/{itemId}/comprado` y body `{"comprado":true}`.
+
+Ejemplo de `GET /citas/{id}` para un evento nuevo:
+
+```json
+{
+  "id": "uuid-cita",
+  "type": "evento",
+  "title": "Picnic",
+  "description": "Salida al parque",
+  "date": "31-10-2026",
+  "icon": "backpack_outlined",
+  "documentos": [],
+  "itinerario": {"actividades": []},
+  "presupuesto": {"gastado": 0, "limite": 0, "conceptos": []},
+  "checklistId": "uuid-checklist-nuevo"
+}
+```
+
+El estado `comprado` es compartido: modificar o reiniciar un checklist afecta a todas las citas vinculadas a el. Para estados independientes, crear un checklist nuevo en lugar de reutilizar el ID.
+
+`DELETE /checklists/{checklistId}` mantiene su comportamiento: elimina el checklist sin actualizar citas. Si una cita referencia un checklist borrado, su consulta de detalle devuelve `404`; el front debe permitir desvincularlo o seleccionar otro. No hay borrado en cascada ni integridad referencial automatica tras la vinculacion.
+
+### Validaciones y errores
+
+| HTTP | Caso |
+|---|---|
+| 400 | Enviar `checklistId` y `checklist` juntos, incluso si uno es `null` |
+| 400 | `checklistId` vacio/no textual, `checklist: null`, o checklist sin `titulo` |
+| 400 | Enviar cualquiera de esos campos para un tipo distinto de `evento` |
+| 400 | Items/grupos invalidos, IDs repetidos, `groupId` desconocido o estado no booleano |
+| 400 | Usar el antiguo campo `incluido`; ahora se usa `comprado` |
+| 400 | Mas de 98 grupos e items iniciales combinados, incluyendo grupos por defecto |
+| 404 | Cita a editar inexistente o checklist referenciado inexistente |
+| 409 | ID de cita/checklist ya ocupado o conflicto concurrente detectado |
+| 502 | Otro error de DynamoDB; no se confirma la transaccion |
+
+Errores de citas usan `message` y errores de checklists usan `error`, conservando las convenciones de cada servicio. Tambien aplican los limites de DynamoDB: 400 KB por registro y 4 MB por transaccion. Para listas mayores, crear la cabecera y agregar grupos/items por los endpoints individuales.
+
+No hay deduplicacion automatica si el cliente reintenta con nuevos UUID tras perder una respuesta. Consultar el estado antes de reintentar; el front puede enviar IDs estables para la cita y el checklist nuevo, y tratar un `409` consultando esos IDs.
+
+POST masivo `/citas` conserva `{created: [ids], errors: [{index, error}]}` y HTTP `201`/`207`. Cada cita se guarda en su propia transaccion; el lote completo no es atomico. Para obtener el checklist generado de cada cita, consultar su detalle usando el ID de `created`.
+
+### Compatibilidad con citas antiguas
+
+No hay migracion automatica ni escrituras durante GET. Los eventos antiguos pueden seguir devolviendo `checklist: {items: [...]}`; el front debe tolerarlo mientras se migran. Una actualizacion que omita el vinculo conserva ese contenido antiguo.
+
+Para migrar, enviar PUT con `checklist: {titulo, items}` usando `comprado` en cada item (convertir el antiguo `incluido` al mismo valor booleano). El servicio crea el checklist en su tabla, guarda la referencia y elimina el objeto embebido en una transaccion. Tambien se puede reemplazar por un `checklistId` existente o desvincular con `checklistId: null`; ambas opciones retiran el objeto antiguo.
+
+### Despliegue
+
+Desplegar CitasCRUD, ChecklistsCRUD, CommonLayer y la plantilla SAM juntos. CitasCRUD necesita lectura/escritura sobre `ChecklistsTable` y `dynamodb:ConditionCheckItem`; la plantilla incluye estos permisos. No cambia el esquema ni se requiere una tabla nueva.
+
 Base URL:
 
 ```text
@@ -101,7 +282,7 @@ Despues, invoca `GET /checklists` para pintar los tableros. Para abrir un tabler
 | Metodo | Ruta | Uso |
 |---|---|---|
 | GET | `/checklists` | Lista los tableros sin cargar grupos/items |
-| POST | `/checklists` | Crea un tablero personalizado o de un tipo existente |
+| POST | `/checklists` | Crea un tablero con grupos e items iniciales opcionales |
 | POST | `/checklists/seed-defaults` | Crea/verifica los tres tableros principales |
 | GET | `/checklists/{checklistId}` | Carga tablero, grupos, items y resumen |
 | PUT | `/checklists/{checklistId}` | Actualiza campos del tablero |
@@ -174,8 +355,11 @@ La respuesta de listado no incluye `grupos` ni `items`. Solicita el detalle al n
   "colorValue": 4285161686,
   "usaGrupos": true,
   "grupos": [
-    {"nombre": "Cocina", "emoji": "...", "orden": 0},
+    {"id": "cocina", "nombre": "Cocina", "emoji": "...", "orden": 0},
     {"nombre": "Habitacion", "emoji": "...", "orden": 1}
+  ],
+  "items": [
+    {"nombre": "Empacar platos", "groupId": "cocina", "comprado": false}
   ]
 }
 ```
@@ -186,7 +370,8 @@ Respuesta `201`:
 {
   "message": "Checklist creado",
   "checklistId": "uuid",
-  "grupos": ["uuid-grupo-1", "uuid-grupo-2"]
+  "grupos": ["cocina", "uuid-grupo-2"],
+  "items": ["uuid-item-1"]
 }
 ```
 
@@ -197,6 +382,11 @@ Reglas al crear:
 - Para `supermercado` y `viaje`, si `usaGrupos` es `true` y no se manda `grupos`, se crean las categorias predefinidas.
 - En `deseos` los items pueden permanecer sin categoria; tambien puedes habilitar grupos explicitamente.
 - Puedes enviar `id` o `checklistId` para usar un identificador conocido; de lo contrario se genera un UUID.
+- `grupos` e `items`, si se envian, deben ser listas. `usaGrupos`, si se envia, debe ser booleano.
+- Los items iniciales usan el modelo ChecklistItem; `comprado` debe ser booleano y no se admite `incluido`.
+- Se validan todos los registros antes de escribirlos juntos: un error no deja una cabecera o grupos parciales.
+- Se permiten hasta 98 grupos e items iniciales combinados. Se conservan las rutas individuales para agregar mas despues.
+- La respuesta agrega `items` con los IDs de los items creados (array vacio si no se enviaron).
 
 ### Cargar el detalle de un checklist
 

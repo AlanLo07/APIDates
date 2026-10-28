@@ -25,13 +25,16 @@ import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
+from common.checklists import build_checklist_records, checklist_puts, write_transaction
 from common.utils import build_response, get_path_param, parse_body, scan_all
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource('dynamodb')
+dynamodb_client = boto3.client('dynamodb')
 TABLE_NAME = os.environ.get('CITAS_TABLE_NAME', 'CitasTable')
+CHECKLISTS_TABLE_NAME = os.environ.get('CHECKLISTS_TABLE_NAME', 'ChecklistsTable')
 table = dynamodb.Table(TABLE_NAME) # type: ignore
 
 
@@ -198,36 +201,51 @@ def normalize_event_budget(value) -> dict:
     }
 
 
-def normalize_event_checklist(value) -> dict:
-    if value is None:
-        return {'items': []}
-    if not isinstance(value, dict):
-        raise ValueError("El campo 'checklist' debe ser un objeto")
+def prepare_checklist(data: dict) -> tuple[str | None, list[dict]]:
+    has_id = 'checklistId' in data
+    has_new = 'checklist' in data
+    if has_id and has_new:
+        raise ValueError("Envia solo 'checklistId' o 'checklist', no ambos")
+    if not has_id and not has_new:
+        return None, []
+    if data.get('type') != 'evento':
+        raise ValueError("Solo las citas de tipo 'evento' pueden vincular un checklist")
+    if has_new:
+        records = build_checklist_records(data['checklist'])
+        return records[0]['checklistId'], records
+    checklist_id = data['checklistId']
+    if checklist_id is not None and (not isinstance(checklist_id, str) or not checklist_id.strip()):
+        raise ValueError("El campo 'checklistId' debe ser texto no vacio o null")
+    return checklist_id.strip() if checklist_id is not None else None, []
 
-    raw_items = value.get('items', [])
-    if raw_items is None:
-        raw_items = []
-    if not isinstance(raw_items, list):
-        raise ValueError("El campo 'checklist.items' debe ser una lista")
 
-    items: list[dict] = []
-    for index, item in enumerate(raw_items):
-        if not isinstance(item, dict):
-            raise ValueError(f"El item del checklist en la posición {index} debe ser un objeto")
-
-        nombre = clean_str(item.get('nombre'))
-        incluido = item.get('incluido') is True
-
-        if not nombre and not incluido:
-            continue
-        if not nombre:
-            raise ValueError(
-                f"El item del checklist en la posición {index} debe incluir 'nombre'"
-            )
-
-        items.append({'nombre': nombre, 'incluido': incluido})
-
-    return {'items': items}
+def persist_cita(action: dict, checklist_id: str | None, records: list[dict]):
+    actions = checklist_puts(CHECKLISTS_TABLE_NAME, records)
+    if checklist_id and not records:
+        actions.append({'ConditionCheck': {
+            'TableName': CHECKLISTS_TABLE_NAME,
+            'Key': {'pk': f'CHECKLIST#{checklist_id}', 'sk': 'META'},
+            'ConditionExpression': 'attribute_exists(pk) AND attribute_exists(sk)',
+        }})
+    actions.append(action)
+    try:
+        write_transaction(dynamodb_client, actions)
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') != 'TransactionCanceledException':
+            raise
+        reasons = exc.response.get('CancellationReasons', [])
+        for index, reason in enumerate(reasons):
+            if reason.get('Code') != 'ConditionalCheckFailed':
+                continue
+            if 'ConditionCheck' in actions[index]:
+                return build_response(404, {'message': f"Checklist '{checklist_id}' no encontrado"})
+            if 'Update' in actions[index]:
+                return build_response(404, {'message': 'Cita no encontrada'})
+            return build_response(409, {'message': 'La cita o el checklist ya existe'})
+        if any(reason.get('Code') == 'TransactionConflict' for reason in reasons):
+            return build_response(409, {'message': 'Conflicto concurrente; consulta el estado antes de reintentar'})
+        raise
+    return None
 
 
 def validate_event_shape(data: dict) -> tuple[bool, str]:
@@ -235,7 +253,6 @@ def validate_event_shape(data: dict) -> tuple[bool, str]:
         normalize_event_documents(data.get('documentos'))
         normalize_event_itinerary(data.get('itinerario'))
         normalize_event_budget(data.get('presupuesto'))
-        normalize_event_checklist(data.get('checklist'))
     except ValueError as exc:
         return False, str(exc)
     return True, ''
@@ -258,6 +275,8 @@ def validate_cita(data: dict) -> tuple[bool, str]:
     Valida tipo y campos requeridos.
     Retorna (True, '') si es válido, o (False, mensaje) si no.
     """
+    if not isinstance(data, dict):
+        return False, 'Cada cita debe ser un objeto JSON'
     event_type = data.get('type', '')
     if event_type not in VALID_TYPES:
         return False, f"Tipo inválido: '{event_type}'. Opciones: {', '.join(sorted(VALID_TYPES))}"
@@ -342,7 +361,7 @@ def normalize_cita(data: dict) -> dict:
         base['documentos'] = normalize_event_documents(data.get('documentos'))
         base['itinerario'] = normalize_event_itinerary(data.get('itinerario'))
         base['presupuesto'] = normalize_event_budget(data.get('presupuesto'))
-        base['checklist'] = normalize_event_checklist(data.get('checklist'))
+        base['checklistId'] = data.get('checklistId')
 
     return base
 
@@ -403,13 +422,27 @@ def create_item(data: dict):
     valid, msg = validate_cita(data)
     if not valid:
         return build_response(400, {'message': msg})
-    item = normalize_cita(data)
-    table.put_item(Item=item)
-    return build_response(201, {'message': 'Cita creada', 'id': item['id'], 'type': item['type']})
+    try:
+        checklist_id, records = prepare_checklist(data)
+    except ValueError as exc:
+        return build_response(400, {'message': str(exc)})
+    item = normalize_cita({**data, 'checklistId': checklist_id})
+    error = persist_cita({'Put': {
+        'TableName': TABLE_NAME, 'Item': item,
+        'ConditionExpression': 'attribute_not_exists(id)',
+    }}, checklist_id, records)
+    if error is not None:
+        return error
+    return build_response(201, {
+        'message': 'Cita creada', 'id': item['id'], 'type': item['type'],
+        'checklistId': checklist_id,
+    })
 
 
 def update_item(item_id: str, data: dict):
     """PUT /citas/{id} — Actualiza los campos enviados y revalida el item completo."""
+    if not isinstance(data, dict):
+        return build_response(400, {'message': 'El body debe ser un objeto JSON'})
     update_fields = {k: v for k, v in data.items() if k != 'id'}
     if not update_fields:
         return build_response(400, {'error': 'No hay campos para actualizar'})
@@ -421,6 +454,14 @@ def update_item(item_id: str, data: dict):
 
     merged = deep_merge(existing, update_fields)
     merged['id'] = item_id
+    has_checklist_update = 'checklistId' in update_fields or 'checklist' in update_fields
+    try:
+        checklist_id, records = prepare_checklist({**update_fields, 'type': merged['type']})
+    except ValueError as exc:
+        return build_response(400, {'message': str(exc)})
+    if has_checklist_update:
+        merged.pop('checklist', None)
+        merged['checklistId'] = checklist_id
 
     valid, msg = validate_cita(merged)
     if not valid:
@@ -437,20 +478,29 @@ def update_item(item_id: str, data: dict):
         expr_values[vk] = value
         expr_names[sk] = key
 
-    try:
-        table.update_item(
-            Key={'id': item_id},
-            UpdateExpression='SET ' + ', '.join(expr_parts),
-            ExpressionAttributeValues=expr_values,
-            ExpressionAttributeNames=expr_names,
-            ConditionExpression=Attr('id').exists(),   # 404 si no existe
-        )
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
-            return build_response(404, {'error': f"Cita '{item_id}' no encontrada"})
-        raise
-
-    return build_response(200, {'message': 'Cita actualizada', 'id': item_id})
+    expression = 'SET ' + ', '.join(expr_parts)
+    remove_fields = []
+    if has_checklist_update or merged['type'] != 'evento':
+        expr_names['#legacy_checklist'] = 'checklist'
+        remove_fields.append('#legacy_checklist')
+    if merged['type'] != 'evento':
+        expr_names['#old_checklist_id'] = 'checklistId'
+        remove_fields.append('#old_checklist_id')
+    if remove_fields:
+        expression += ' REMOVE ' + ', '.join(remove_fields)
+    error = persist_cita({'Update': {
+        'TableName': TABLE_NAME, 'Key': {'id': item_id},
+        'UpdateExpression': expression,
+        'ExpressionAttributeValues': expr_values,
+        'ExpressionAttributeNames': expr_names,
+        'ConditionExpression': 'attribute_exists(id)',
+    }}, normalized_item.get('checklistId'), records)
+    if error is not None:
+        return error
+    return build_response(200, {
+        'message': 'Cita actualizada', 'id': item_id,
+        'checklistId': normalized_item.get('checklistId'),
+    })
 
 
 def delete_item(item_id: str):
@@ -651,6 +701,9 @@ def lambda_handler(event, context):
             case _:
                 return build_response(405, {'message': f'Método {method} no permitido'})
 
+    except ValueError as exc:
+        logger.warning(json.dumps({'level': '🟡', 'message': 'Solicitud CitasCRUD invalida'}, ensure_ascii=False))
+        return build_response(400, {'message': str(exc)})
     except ClientError as e:
         logger.error(json.dumps({
             'level': '🔴',

@@ -421,6 +421,12 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref CitasTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChecklistsTable
+        - Statement:
+            - Effect: Allow
+              Action: dynamodb:ConditionCheckItem
+              Resource: !GetAtt ChecklistsTable.Arn
       Events:
         GetAll:
           Type: HttpApi
