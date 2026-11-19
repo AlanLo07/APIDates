@@ -1172,6 +1172,81 @@ Resources:
             Schedule: "cron(0 0 1 1,7 ? *)"
             Enabled: false
 
+  WeeklyQuestionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: weekly-questions-crud
+      CodeUri: functions/WeeklyQuestionsCRUD/
+      Handler: handler.lambda_handler
+      Description: "Catalogo y preguntas semanales de la pareja"
+      Environment:
+        Variables:
+          WEEKLY_QUESTIONS_TABLE_NAME: !Ref WeeklyQuestionsTable
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:ConditionCheckItem
+              Resource: !GetAtt WeeklyQuestionsTable.Arn
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+              Resource: !GetAtt CognitoUserPool.Arn
+      Events:
+        ListCatalog:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /weekly-questions/catalog
+        CreateCatalogQuestion:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /weekly-questions/catalog
+        GetCatalogQuestion:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /weekly-questions/catalog/{id}
+        EditCatalogQuestion:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /weekly-questions/catalog/{id}
+        GetCurrentQuestion:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /weekly-questions/current
+        ListQuestions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /weekly-questions
+        GetQuestion:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: GET
+            Path: /weekly-questions/{id}
+        SaveOwnAnswer:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: PUT
+            Path: /weekly-questions/{id}/answer
+
   # ── Lambda: Monthly Challenges CRUD (retos mensuales de pareja) ───────────
   MonthlyChallengesFunction:
     Type: AWS::Serverless::Function
@@ -1856,6 +1931,31 @@ Resources:
         - Key: Project
           Value: citas-app
 
+  WeeklyQuestionsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: WeeklyQuestionsTable
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 Outputs:
   ApiUrl:
@@ -1968,3 +2068,11 @@ Outputs:
   MonthlyChallengesEndpoint:
     Description: "Endpoint base de retos mensuales de pareja"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/monthly-challenges"
+
+  WeeklyQuestionsTableName:
+    Description: "Tabla de catalogo, historial y preguntas semanales"
+    Value: !Ref WeeklyQuestionsTable
+
+  WeeklyQuestionsEndpoint:
+    Description: "Endpoint base de preguntas semanales de pareja"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/weekly-questions"

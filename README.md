@@ -84,6 +84,13 @@ Consulta catálogo público de Spotify (search, tracks, artists, albums, playlis
 - **Autenticación player:** Authorization Code (el usuario vincula su cuenta vía `/spotify/login`)
 - **Endpoints:** `/spotify/*`
 
+### Pregunta de la semana
+Catalogo editable por ambos integrantes, seleccion semanal compartida y respuestas individuales.
+- **Tabla:** `WeeklyQuestionsTable`
+- **Funcion:** `weekly-questions-crud`
+- **Endpoints:** `/weekly-questions`, `/weekly-questions/*`
+- **Guia frontend:** [WEEKLY_QUESTIONS_FRONTEND_INTEGRATION.md](WEEKLY_QUESTIONS_FRONTEND_INTEGRATION.md)
+
 ---
 
 ## 📁 Estructura del Proyecto
@@ -447,6 +454,7 @@ Database Layer
 
 - **Finances:** Ver [FINANCES_CRUD_DOCUMENTATION.md](FINANCES_CRUD_DOCUMENTATION.md)
 - **Bodas:** Ver [BODAS_CRUD_DOCUMENTATION.md](BODAS_CRUD_DOCUMENTATION.md)
+- **Pregunta de la semana:** Ver [WEEKLY_QUESTIONS_FRONTEND_INTEGRATION.md](WEEKLY_QUESTIONS_FRONTEND_INTEGRATION.md)
 - **Checklists:** Ver [CHECKLISTS_CRUD_DOCUMENTATION.md](CHECKLISTS_CRUD_DOCUMENTATION.md)
 - **Diagramas:** Ver [ARCHITECTURE.mmd](ARCHITECTURE.mmd), [FLOW.mmd](FLOW.mmd), [SEQUENCE.mmd](SEQUENCE.mmd)
 
