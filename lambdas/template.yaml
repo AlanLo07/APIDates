@@ -59,10 +59,25 @@ Parameters:
     Type: String
     Default: mariana.delgado6@icloud.com
     Description: "Segundo integrante autorizado para adoptar los registros legacy de Finanzas"
+  DeployFcmDemo:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "Activa los recursos de la demo FCM solo cuando se establece en true"
+  FcmCredentialsSecretArn:
+    Type: String
+    Default: ""
+    Description: "ARN de Secrets Manager con el JSON de la cuenta de servicio Firebase"
   # KamasutraTableName:
   #   Type: String
   #   Default: KamasutraTable
   #   Description: "Nombre de la tabla Kamasutra"
+
+Conditions:
+  EnableFcmDemo:
+    Fn::Equals:
+      - !Ref DeployFcmDemo
+      - "true"
 
 # ─── Globals ──────────────────────────────────────────────────────────────────
 Globals:
@@ -1545,6 +1560,84 @@ Resources:
             Method: POST
             Path: /spotify/player/previous
 
+  # ── Lambda: Demo de notificaciones push FCM ───────────────────────────────
+  NotificationsFunction:
+    Type: AWS::Serverless::Function
+    Condition: EnableFcmDemo
+    Properties:
+      FunctionName: notifications-fcm-demo
+      CodeUri: functions/NotificationsCRUD/
+      Handler: handler.lambda_handler
+      Description: "Registro de tokens FCM y envío de notificaciones de prueba"
+      Environment:
+        Variables:
+          NOTIFICATION_DEVICES_TABLE: !Ref NotificationDevicesTable
+          FCM_CREDENTIALS_SECRET_ARN: !Ref FcmCredentialsSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:Query
+                - dynamodb:DeleteItem
+              Resource:
+                - !GetAtt NotificationDevicesTable.Arn
+                - !Sub "${NotificationDevicesTable.Arn}/index/userId-index"
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref FcmCredentialsSecretArn
+      Events:
+        RegisterDevice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /notifications/devices
+        UnregisterDevice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: DELETE
+            Path: /notifications/devices
+        SendTestNotification:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref CitasApi
+            Method: POST
+            Path: /notifications/test
+
+  # ── DynamoDB: Dispositivos registrados para FCM ──────────────────────────
+  NotificationDevicesTable:
+    Type: AWS::DynamoDB::Table
+    Condition: EnableFcmDemo
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: NotificationDevices
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: fidHash
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: fidHash
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: userId-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: fidHash
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: citas-app
+
   # ── DynamoDB: Tokens de usuario vinculados a Spotify (Authorization Code) ─
   SpotifyTokensTable:
     Type: AWS::DynamoDB::Table
@@ -1794,6 +1887,11 @@ Outputs:
   AuthEndpoint:
     Description: "Endpoint base de autenticación"
     Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/auth"
+
+  FcmDemoEndpoint:
+    Condition: EnableFcmDemo
+    Description: "Endpoint base de la demo de notificaciones FCM"
+    Value: !Sub "https://${CitasApi}.execute-api.${AWS::Region}.amazonaws.com/notifications"
 
   LovePhrasesTableName:
     Description: "Nombre de la tabla LovePhrases"
